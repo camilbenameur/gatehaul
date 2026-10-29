@@ -1,8 +1,8 @@
 // Command gatehaul offloads a coding agent's builds and tests to remote
 // sandboxes and refuses green verdicts without proof that the tests ran.
 //
-// This release implements "doctor" and "version"; the other commands are on
-// the roadmap in docs/SPEC.md.
+// This release implements "doctor", "version", "up", "down", "run", "wait" and
+// "log"; the other commands are on the roadmap in docs/SPEC.md.
 package main
 
 import (
@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"syscall"
 
 	"github.com/camilbenameur/gatehaul/internal/doctor"
 	"github.com/camilbenameur/gatehaul/internal/out"
@@ -23,7 +24,9 @@ import (
 var version = "dev"
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// SIGTERM and SIGHUP end the run the way Ctrl-C does, so that the gh and ssh
+	// children are killed with it instead of outliving gatehaul.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
@@ -31,8 +34,7 @@ func main() {
 
 // planned lists the commands of v0.1 that are not implemented yet.
 var planned = map[string]bool{
-	"up": true, "down": true, "run": true, "gen": true, "wait": true, "log": true,
-	"status": true, "queue": true, "cancel": true, "gate": true, "hook": true,
+	"gen": true, "status": true, "queue": true, "cancel": true, "gate": true, "hook": true,
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -45,6 +47,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cmdDoctor(ctx, args[1:], stdout, stderr)
 	case cmd == "version" || cmd == "--version":
 		return cmdVersion(args[1:], stdout, stderr)
+	case cmd == "run":
+		return cmdRun(ctx, args[1:], stdout, stderr)
+	case cmd == "wait":
+		return cmdWait(ctx, args[1:], stdout, stderr)
+	case cmd == "log":
+		return cmdLog(ctx, args[1:], stdout, stderr)
+	case cmd == "up":
+		return cmdUp(ctx, args[1:], stdout, stderr)
+	case cmd == "down":
+		return cmdDown(ctx, args[1:], stdout, stderr)
 	case cmd == "help" || cmd == "-h" || cmd == "--help":
 		usage(stdout)
 		return out.ExitOK
@@ -73,9 +85,19 @@ Usage:
   gatehaul doctor [--json] [--repo owner/repo] [-C dir]
                      check gh, authentication, git, the repository and the hosts;
                      every problem comes with the command that fixes it
+  gatehaul up [-n 1] [--machine M] [--max 2] [--yes] [--dry-run] [--json]
+                     create the missing gatehaul-<i> codespaces (uses your quota;
+                     without a terminal, --yes is required)
+  gatehaul down [--delete] [--json]
+                     stop (or delete) the hosts that run nothing and queue nothing
+  gatehaul run [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--json] -- <cmd>
+                     send a commit and run <cmd> on a host; waits at most --block (5m)
+  gatehaul wait [<id>...] [--any|--all] [--block D] [--json]
+                     wait for jobs; never cancels them
+  gatehaul log [<id>] [--grep RE] [--since N] [--tail N] [--json]
   gatehaul version [--json]
 
-Planned for v0.1: up, down, run, gen, wait, log, status, queue, cancel, gate, hook.
+Planned for v0.1: gen, status, queue, cancel, gate, hook.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 still running, 4 false green, 5 environment, 6 patch refused.
 `)

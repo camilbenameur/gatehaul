@@ -2,7 +2,7 @@
 
 **Offload your coding agents' builds and tests to remote sandboxes, and get proof they actually ran.**
 
-> **Status: early development.** Only `gatehaul doctor` and `gatehaul version` work today (milestone M1); the rest is planned.
+> **Status: early development.** `doctor`, `version`, `up`, `down`, `run`, `wait` and `log` work today, on one codespace (milestone M2); gates, `gen` and several-host scheduling are planned.
 
 ## Why
 
@@ -28,15 +28,20 @@ Today:
 go install github.com/camilbenameur/gatehaul/cmd/gatehaul@latest
 gatehaul doctor                  # checks gh, auth, the codespace scope, git, the repo, the gate and the hosts
 gatehaul doctor --json           # the same for agents, with where each inferred value came from
+gatehaul up                      # create gatehaul-1 (asks first: it uses your quota; --yes without a terminal)
+gatehaul run -- go test ./...    # send HEAD, run it on the codespace; returns a job id after --block (5m)
+gatehaul wait                    # wait for the pending job of HEAD; never cancels it
+gatehaul log --tail 50           # the end of the log of the latest job of HEAD
+gatehaul down                    # stop the codespaces that run nothing
 ```
+
+A job survives the laptop: `gatehaul wait <id>` finds it again from the local job cache. If the answer to a submit is lost, `run` exits 5 with `outcome_unknown` and `next: gatehaul wait <id>`, and never submits twice.
 
 Planned for v0.1:
 
 ```bash
-gatehaul up -n 2                 # create two codespaces (asks first: it uses your quota)
-gatehaul run -- go test ./...    # send HEAD, queue, run; returns a job id if it takes long
-gatehaul wait                    # wait for the pending job of HEAD
 gatehaul gate                    # run the inferred gate and compute the verdict locally
+gatehaul gen -- gofmt -w .       # run, then apply the sanitized patch locally
 ```
 
 ## Fair use

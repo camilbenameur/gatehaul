@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Exit codes shared by every command (PLAN Â§3).
+// Exit codes shared by every command (docs/SPEC.md §3).
 const (
 	ExitOK           = 0 // success, or green verdict
 	ExitRed          = 1 // the job ran and failed
@@ -43,6 +43,26 @@ const (
 	CodeNoGate         Code = "no_gate"
 	CodeNoHosts        Code = "no_hosts"
 	CodeSkipped        Code = "skipped"
+
+	// The submit answer was lost (the job may exist), and the host-related codes.
+	CodeOutcomeUnknown     Code = "outcome_unknown"
+	CodeHostReplaced       Code = "host_replaced"
+	CodeHostGone           Code = "host_gone"
+	CodeNoSuchJob          Code = "no_such_job"
+	CodeAmbiguousJob       Code = "ambiguous_job"
+	CodeWrongRepo          Code = "wrong_repo"
+	CodeConfirmationNeeded Code = "confirmation_required"
+	CodeHostUnreachable    Code = "host_unreachable"
+	CodeHostState          Code = "host_state"
+	CodeRunnerError        Code = "runner_error"
+	CodeMissingTool        Code = "missing_tool"
+	CodeTooManyHosts       Code = "too_many_hosts"
+	CodeBundleFailed       Code = "bundle_failed"
+	CodeCacheError         Code = "cache_error"
+	CodeLockBusy           Code = "lock_busy"
+	CodeCreateFailed       Code = "create_failed"
+	CodeCreateUnknown      Code = "create_unknown"
+	CodeInterrupted        Code = "interrupted"
 )
 
 // Level is the severity of a check.
@@ -109,6 +129,9 @@ type Error struct {
 	Message string
 	Fix     string
 	Exit    int
+	// ID is the job the error is about, when a job already exists: an agent
+	// that only reads the JSON can still wait on it.
+	ID string
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -129,7 +152,8 @@ func WriteError(w io.Writer, asJSON bool, e *Error) {
 			Code    Code   `json:"code"`
 			Message string `json:"message"`
 			Fix     string `json:"fix,omitempty"`
-		}{true, e.Code, e.Message, e.Fix})
+			ID      string `json:"id,omitempty"`
+		}{true, e.Code, e.Message, e.Fix, e.ID})
 		return
 	}
 	fmt.Fprintf(w, "error: %s\n", e.Message)
