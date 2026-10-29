@@ -2,7 +2,7 @@
 
 **Offload your coding agents' builds and tests to remote sandboxes, and get proof they actually ran.**
 
-> **Status: design phase. There is no code yet.**
+> **Status: early development.** Only `gatehaul doctor` and `gatehaul version` work today (milestone M1); the rest is planned.
 
 ## Why
 
@@ -21,6 +21,16 @@ Agents such as Claude Code or Codex run builds and test suites hundreds of times
 - **Gates with proof of execution**: zero tests is a failure, the test count can only go down with explicit human approval, and the verdict is tied to the commit. A false green exits with code 4.
 - **No secrets in the sandbox.** Authentication stays in `gh` on your machine. GitHub's injected tokens are stripped from the job environment.
 - **A Claude Code `Stop` hook** that refuses to end a turn without a green gate on `HEAD`.
+
+Today:
+
+```bash
+go install github.com/camilbenameur/gatehaul/cmd/gatehaul@latest
+gatehaul doctor                  # checks gh, auth, the codespace scope, git, the repo, the gate and the hosts
+gatehaul doctor --json           # the same for agents, with where each inferred value came from
+```
+
+Planned for v0.1:
 
 ```bash
 gatehaul up -n 2                 # create two codespaces (asks first: it uses your quota)
