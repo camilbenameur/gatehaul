@@ -23,6 +23,7 @@ type jobResult struct {
 	state  job.State
 	code   out.Code // host_replaced when the host was recreated
 	done   bool
+	patch  *patchOutcome // gen jobs that succeeded: what became of the patch
 }
 
 // WaitOptions configures Wait. IDs are full ids or unique prefixes; none means
@@ -51,6 +52,9 @@ type JobReport struct {
 	LogTruncated bool   `json:"log_truncated,omitempty"`
 	TreeDirty    bool   `json:"tree_dirty_after,omitempty"`
 	Next         string `json:"next,omitempty"`
+
+	// Patch is set for a gen job that succeeded.
+	Patch *PatchReport `json:"patch,omitempty"`
 }
 
 // Report is the one JSON object that run and wait print.
@@ -93,6 +97,7 @@ func (c *Controller) Wait(ctx context.Context, o WaitOptions) int {
 	if e != nil {
 		return c.fail(o.JSON, e)
 	}
+	c.applyFinished(ctx, rs, false)
 	return c.report(rs, o.Any, o.JSON)
 }
 
@@ -354,7 +359,8 @@ func (c *Controller) markLost(r *jobResult, code out.Code, stage, reason, hostID
 }
 
 // exitFor is the exit code of a set of jobs: 3 while the wanted ones are not
-// done, else 5 if any ended on infrastructure, 1 if any is red, else 0.
+// done, else 5 if any ended on infrastructure, 6 if the patch of a gen job was
+// refused, 1 if any is red, else 0.
 func exitFor(rs []*jobResult, any bool) int {
 	n := countDone(rs)
 	if n == 0 || (!any && n < len(rs)) {
@@ -365,14 +371,25 @@ func exitFor(rs []*jobResult, any bool) int {
 		if !r.done {
 			continue
 		}
-		switch ec := r.state.ExitCode(); {
+		switch ec := r.exit(); {
 		case ec == out.ExitInfra:
 			code = out.ExitInfra
-		case ec == out.ExitRed && code != out.ExitInfra:
+		case ec == out.ExitPatchRefused && code != out.ExitInfra:
+			code = out.ExitPatchRefused
+		case ec == out.ExitRed && code != out.ExitInfra && code != out.ExitPatchRefused:
 			code = out.ExitRed
 		}
 	}
 	return code
+}
+
+// exit is the exit code of one job: that of its state, or that of the patch
+// when the job succeeded but its patch was not applied.
+func (r *jobResult) exit() int {
+	if r.done && r.patch != nil && r.patch.err != nil {
+		return r.patch.err.Exit
+	}
+	return r.state.ExitCode()
 }
 
 func (r *jobResult) next() string {
@@ -380,9 +397,11 @@ func (r *jobResult) next() string {
 	case !r.done:
 		return "gatehaul wait " + r.d.ID
 	case r.code == out.CodeHostReplaced, r.code == out.CodeHostGone:
-		return "gatehaul run -- " + shellQuote(r.d.Cmd)
+		return "gatehaul " + r.d.Kind + " -- " + shellQuote(r.d.Cmd)
 	case r.state != job.Succeeded:
 		return "gatehaul log " + r.d.ID
+	case r.patch != nil:
+		return r.patch.next
 	}
 	return ""
 }
@@ -396,12 +415,19 @@ func (r *jobResult) tail() string {
 }
 
 func (r *jobResult) jobReport() JobReport {
-	return JobReport{
-		ID: r.d.ID, State: string(r.state), Exit: r.state.ExitCode(), Code: string(r.code),
+	jr := JobReport{
+		ID: r.d.ID, State: string(r.state), Exit: r.exit(), Code: string(r.code),
 		FailureKind: r.status.FailureKind, Stage: r.status.Stage, Reason: r.status.Reason,
 		CommandExit: r.status.ExitCode, SHA: r.d.SHA, Host: r.d.Host, QueuePos: r.status.QueuePos,
 		LogTail: r.tail(), LogTruncated: r.status.Truncated, TreeDirty: r.status.TreeDirty, Next: r.next(),
 	}
+	if r.patch != nil {
+		jr.Patch = r.patch.report()
+		if jr.Code == "" && r.patch.err != nil {
+			jr.Code = string(r.patch.err.Code)
+		}
+	}
+	return jr
 }
 
 // report prints the jobs (text or JSON) and returns the exit code.
@@ -420,6 +446,7 @@ func (c *Controller) report(rs []*jobResult, any, asJSON bool) int {
 		if err := out.WriteJSON(c.Stdout, rep); err != nil {
 			return out.ExitInfra
 		}
+		c.writePatchErrors(rs, true)
 		return code
 	}
 	for i, r := range rs {
@@ -428,11 +455,13 @@ func (c *Controller) report(rs []*jobResult, any, asJSON bool) int {
 		}
 		writeJobText(c.Stdout, r)
 	}
+	c.writePatchErrors(rs, false)
 	return code
 }
 
 func writeJobText(w io.Writer, r *jobResult) {
-	fmt.Fprintf(w, "job=%s state=%s exit=%d\n", r.d.ID, r.state, r.state.ExitCode())
+	fmt.Fprintf(w, "job=%s state=%s exit=%d\n", r.d.ID, r.state, r.exit())
+	writePatchText(w, r)
 	if r.status.Stage != "" || r.status.Reason != "" || r.code != "" {
 		fmt.Fprintf(w, "# kind=%s stage=%s code=%s reason=%s\n", r.status.FailureKind, r.status.Stage, r.code, oneLine(r.status.Reason))
 	}

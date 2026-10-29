@@ -3,7 +3,9 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -192,6 +194,33 @@ func (c *Client) Cancel(ctx context.Context, id string) (JobStatus, error) {
 	}
 	err := c.call(ctx, CmdCancel, []field{{"id", id}}, nil, 0, &res)
 	return res, err
+}
+
+// Patch implements API. It returns the patch of a gen job that succeeded, once
+// its bytes are checked against the size and sha256 the runner announced.
+func (c *Client) Patch(ctx context.Context, id string) (PatchData, error) {
+	var res PatchData
+	if !IDPattern.MatchString(id) {
+		return res, fmt.Errorf("runner: invalid job id %q", id)
+	}
+	extra := MaxPatchBytes*4/3 + 8192
+	if err := c.call(ctx, CmdPatch, []field{{"id", id}}, nil, extra, &res); err != nil {
+		return PatchData{}, err
+	}
+	raw, err := base64.StdEncoding.DecodeString(res.DataB64)
+	if err != nil {
+		return PatchData{}, fmt.Errorf("runner %s: the patch is not valid base64: %v: %w", CmdPatch, err, ErrProtocol)
+	}
+	if int64(len(raw)) != res.Size {
+		return PatchData{}, fmt.Errorf("runner %s: the patch has %d bytes, the runner announced %d: %w",
+			CmdPatch, len(raw), res.Size, ErrProtocol)
+	}
+	sum := sha256.Sum256(raw)
+	if hex.EncodeToString(sum[:]) != res.SHA256 {
+		return PatchData{}, fmt.Errorf("runner %s: the sha256 of the patch does not match what the runner announced: %w",
+			CmdPatch, ErrProtocol)
+	}
+	return res, nil
 }
 
 // GC removes the jobs that finished more than days days ago and returns how

@@ -65,6 +65,7 @@ const (
 	CmdLog    = "log"
 	CmdCancel = "cancel"
 	CmdGC     = "gc"
+	CmdPatch  = "patch" // the patch of a finished gen job (M3)
 )
 
 // Limits shared by both sides.
@@ -72,6 +73,7 @@ const (
 	MaxWaitSlice   = 60 * time.Second // one wait call; the controller loops
 	MaxLogChunk    = 100 << 10        // bytes of log per response
 	MaxBundleBytes = 2 << 30          // the runner refuses bigger bundles
+	MaxPatchBytes  = 8 << 20          // the runner refuses to send a bigger patch
 	MaxLogFile     = 16 << 20         // a job that writes more than this is stopped (failed, truncated)
 )
 
@@ -171,6 +173,8 @@ type JobStatus struct {
 	LogTailB64  string `json:"log_tail_b64"`
 	Truncated   bool   `json:"truncated"`        // the log went over MaxLogFile and the job was stopped
 	TreeDirty   bool   `json:"tree_dirty_after"` // the command changed tracked files
+	PatchSHA256 string `json:"patch_sha256"`     // gen only: sha256 of the patch, once the job succeeded
+	PatchSize   int64  `json:"patch_size"`       // gen only: its size in bytes (0 for an empty patch)
 }
 
 // WaitResult is the response to "wait".
@@ -209,6 +213,19 @@ func Fingerprint(r SubmitRequest) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// PatchData is the response to "patch": the patch of a gen job that succeeded,
+// computed on the host by "git add -A -N" then "git diff --binary --full-index
+// --no-ext-diff --no-textconv --no-renames HEAD" (docs/SPEC.md §5.2 step 7).
+// The controller checks SHA256 against the bytes before anything else, then
+// sanitises the patch on a tree diff (internal/patch) before applying it.
+type PatchData struct {
+	Schema  int    `json:"schema"`
+	ID      string `json:"id"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	DataB64 string `json:"data_b64"`
+}
+
 // ErrorResponse is the JSON of a response whose END rc is not 0.
 type ErrorResponse struct {
 	Schema int `json:"schema"`
@@ -231,6 +248,8 @@ const (
 	ErrCodeInstallFailed  = "install_failed"
 	ErrCodeNoExec         = "noexec"
 	ErrCodeDiskFull       = "disk_full"
+	ErrCodeNoPatch        = "no_patch"        // not a gen job, not finished, or it failed
+	ErrCodePatchTooLarge  = "patch_too_large" // over MaxPatchBytes
 )
 
 // RemoteError is a runner that answered with an ErrorResponse.
@@ -260,4 +279,5 @@ type API interface {
 	Wait(ctx context.Context, r WaitRequest) ([]JobStatus, error)
 	Log(ctx context.Context, r LogRequest) (LogChunk, error)
 	Cancel(ctx context.Context, id string) (JobStatus, error)
+	Patch(ctx context.Context, id string) (PatchData, error)
 }

@@ -6,7 +6,9 @@ package hosttest
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -79,6 +81,14 @@ func Run(t *testing.T, newBackend func(t *testing.T) host.Backend) {
 		{"corrupt_runner_is_reinstalled", scenarioCorruptRunner},
 		{"recreated_host_has_another_identity", scenarioReplaced},
 		{"first_exec_wakes_a_stopped_host", scenarioWake},
+		{"gen_patch", scenarioGenPatch},
+		{"gen_failure_has_no_patch", scenarioGenFailed},
+		{"run_job_has_no_patch", scenarioRunNoPatch},
+		{"gen_without_changes_has_an_empty_patch", scenarioGenEmpty},
+		{"gen_patch_is_against_the_base_commit", scenarioGenCommitted},
+		{"gen_patch_leaves_out_kept_caches", scenarioGenKeptCache},
+		{"gen_patch_over_the_limit_fails", scenarioGenPatchTooLarge},
+		{"gen_patch_failure_has_a_reason", scenarioGenPatchReason},
 	}
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
@@ -1141,4 +1151,275 @@ func scenarioScript(t *testing.T, _ host.Backend) {
 	if len(runner.Version()) != 12 {
 		t.Errorf("version %q is not 12 digits long", runner.Version())
 	}
+}
+
+// ------------------------------------------------------------------ gen
+
+// genReq builds a gen request: like req, with the kind and the fingerprint
+// that go with it.
+func (r *rig) genReq(cmd, sha string) runner.SubmitRequest {
+	req := r.req(cmd, sha)
+	req.Kind = runner.KindGen
+	req.Fingerprint = runner.Fingerprint(req)
+	return req
+}
+
+func hexSum(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// patchBytes fetches the patch of a finished gen job and checks that it agrees
+// with the status the runner gave for the job.
+func (r *rig) patchBytes(st runner.JobStatus) []byte {
+	r.t.Helper()
+	p, err := r.c.Patch(r.t.Context(), st.ID)
+	if err != nil {
+		r.t.Fatalf("patch %s: %v", st.ID, err)
+	}
+	data, err := base64.StdEncoding.DecodeString(p.DataB64)
+	if err != nil {
+		r.t.Fatalf("patch %s: bad base64: %v", st.ID, err)
+	}
+	if p.ID != st.ID {
+		r.t.Errorf("patch id = %q, want %q", p.ID, st.ID)
+	}
+	if got := hexSum(data); got != p.SHA256 || got != st.PatchSHA256 {
+		r.t.Errorf("sha256 of the patch bytes = %s, patch reply says %s, status says %s", got, p.SHA256, st.PatchSHA256)
+	}
+	if int64(len(data)) != p.Size || p.Size != st.PatchSize {
+		r.t.Errorf("patch has %d bytes, patch reply says %d, status says %d", len(data), p.Size, st.PatchSize)
+	}
+	return data
+}
+
+func scenarioGenPatch(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	r.commit("a.txt", "one\n")
+	sha := r.commit("b.txt", "two\n")
+
+	// One tracked file changed, one deleted, and two files added (one binary,
+	// one in a new directory).
+	cmd := `printf 'changed\n' > a.txt; rm b.txt; printf 'new\n' > c.txt; ` +
+		`printf '\000\001\002binary\377' > bin.dat; mkdir sub; printf 'deep\n' > sub/d.txt`
+	req := r.genReq(cmd, sha)
+	r.submit(req)
+	st := r.waitDone(req.ID)
+	wantState(t, st, "succeeded")
+	if st.PatchSHA256 == "" || st.PatchSize <= 0 {
+		t.Fatalf("a gen job that changed files has patch_sha256 %q and patch_size %d", st.PatchSHA256, st.PatchSize)
+	}
+	data := r.patchBytes(st)
+
+	// The patch applied on a fresh checkout of the base commit gives the files
+	// the command left behind.
+	dir := t.TempDir()
+	git(t, dir, "clone", "-q", r.repo, ".")
+	git(t, dir, "checkout", "-q", "--detach", sha)
+	file := filepath.Join(t.TempDir(), "gen.patch")
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		t.Fatalf("write the patch: %v", err)
+	}
+	git(t, dir, "apply", "--binary", file)
+	want := map[string]string{
+		"a.txt":     "changed\n",
+		"c.txt":     "new\n",
+		"bin.dat":   "\x00\x01\x02binary\xff",
+		"sub/d.txt": "deep\n",
+	}
+	for name, content := range want {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(got) != content {
+			t.Errorf("%s after applying the patch = %q, %v; want %q", name, got, err, content)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "b.txt")); err == nil {
+		t.Errorf("b.txt still exists after applying the patch")
+	}
+
+	// The host's worktree is clean again for the next job of the same branch.
+	next := r.req(`s=$(git status --porcelain); echo "porcelain=[$s]"`, sha)
+	r.submit(next)
+	wantState(t, r.waitDone(next.ID), "succeeded")
+	wantContains(t, "log of the next job", r.logText(next.ID), "porcelain=[]")
+	r.noProcs(req.ID)
+}
+
+func scenarioGenFailed(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	sha := r.commit("a.txt", "one\n")
+	req := r.genReq(`printf 'changed\n' > a.txt; exit 3`, sha)
+	r.submit(req)
+	st := r.waitDone(req.ID)
+	wantState(t, st, "failed")
+	if st.PatchSHA256 != "" || st.PatchSize != 0 {
+		t.Errorf("a failed gen job has patch_sha256 %q and patch_size %d", st.PatchSHA256, st.PatchSize)
+	}
+	_, err := r.c.Patch(t.Context(), req.ID)
+	wantRemote(t, err, runner.ErrCodeNoPatch)
+}
+
+func scenarioRunNoPatch(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	sha := r.commit("a.txt", "one\n")
+	req := r.req("true", sha)
+	r.submit(req)
+	st := r.waitDone(req.ID)
+	wantState(t, st, "succeeded")
+	if st.PatchSHA256 != "" || st.PatchSize != 0 {
+		t.Errorf("a run job has patch_sha256 %q and patch_size %d", st.PatchSHA256, st.PatchSize)
+	}
+	_, err := r.c.Patch(t.Context(), req.ID)
+	wantRemote(t, err, runner.ErrCodeNoPatch)
+
+	// A job that does not exist is unknown, not "without a patch".
+	_, err = r.c.Patch(t.Context(), "1-01TEST00000000000009999999")
+	wantRemote(t, err, runner.ErrCodeUnknownJob)
+}
+
+func scenarioGenEmpty(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	sha := r.commit("a.txt", "one\n")
+	req := r.genReq("true", sha)
+	r.submit(req)
+	st := r.waitDone(req.ID)
+	wantState(t, st, "succeeded")
+	if st.PatchSize != 0 || st.PatchSHA256 != hexSum(nil) {
+		t.Errorf("an empty patch has patch_sha256 %q and patch_size %d, want the hash of nothing and 0", st.PatchSHA256, st.PatchSize)
+	}
+	if data := r.patchBytes(st); len(data) != 0 {
+		t.Errorf("the patch of a gen job that changed nothing is %q, want empty", data)
+	}
+}
+
+// applied checks out sha in a clone of the rig's repository, applies the patch
+// there and returns the directory.
+func (r *rig) applied(sha string, data []byte) string {
+	r.t.Helper()
+	dir := r.t.TempDir()
+	git(r.t, dir, "clone", "-q", r.repo, ".")
+	git(r.t, dir, "checkout", "-q", "--detach", sha)
+	file := filepath.Join(r.t.TempDir(), "gen.patch")
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		r.t.Fatalf("write the patch: %v", err)
+	}
+	git(r.t, dir, "apply", "--binary", file)
+	return dir
+}
+
+// scenarioGenCommitted: a command that commits (here a change to a tracked
+// file) moves HEAD of the worktree, but the patch is still against the commit
+// that was sent: it holds the committed change and the one made after it.
+func scenarioGenCommitted(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	r.commit("a.txt", "one\n")
+	sha := r.commit("b.txt", "two\n")
+
+	cmd := `printf 'changed\n' > a.txt; git -c user.name=t -c user.email=t@x commit -q -am x; ` +
+		`printf 'later\n' > c.txt`
+	req := r.genReq(cmd, sha)
+	r.submit(req)
+	st := r.waitDone(req.ID)
+	wantState(t, st, "succeeded")
+	if st.PatchSize <= 0 {
+		t.Fatalf("the patch of a gen job that committed is empty: %+v", st)
+	}
+	dir := r.applied(sha, r.patchBytes(st))
+	for name, want := range map[string]string{"a.txt": "changed\n", "b.txt": "two\n", "c.txt": "later\n"} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(got) != want {
+			t.Errorf("%s after applying the patch = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	r.noProcs(req.ID)
+}
+
+// scenarioGenKeptCache: the cache directories that the reset keeps between
+// jobs are not part of the next gen job's patch, even when the repository does
+// not ignore them.
+func scenarioGenKeptCache(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	sha := r.commit("a.txt", "one\n")
+
+	first := r.req(`mkdir -p node_modules/pkg && printf 'cache\n' > node_modules/x && printf 'cache\n' > node_modules/pkg/y`, sha)
+	r.submit(first)
+	wantState(t, r.waitDone(first.ID), "succeeded")
+
+	second := r.genReq(`ls node_modules/x && printf 'new\n' > c.txt`, sha)
+	r.submit(second)
+	st := r.waitDone(second.ID)
+	wantState(t, st, "succeeded")
+	wantContains(t, "log of the gen job", r.logText(second.ID), "node_modules/x")
+	data := r.patchBytes(st)
+	if strings.Contains(string(data), "node_modules") {
+		t.Errorf("the patch holds files that were in the kept cache before the command:\n%s", data)
+	}
+	dir := r.applied(sha, data)
+	if got, err := os.ReadFile(filepath.Join(dir, "c.txt")); err != nil || string(got) != "new\n" {
+		t.Errorf("c.txt after applying the patch = %q, %v; want %q", got, err, "new\n")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil {
+		t.Errorf("node_modules exists after applying the patch")
+	}
+
+	// The cache is still there, and a gen job that changes nothing gives an
+	// empty patch.
+	third := r.genReq("ls node_modules/pkg/y", sha)
+	r.submit(third)
+	st = r.waitDone(third.ID)
+	wantState(t, st, "succeeded")
+	if data := r.patchBytes(st); len(data) != 0 {
+		t.Errorf("the patch of a gen job that changed nothing is %q, want empty", data)
+	}
+}
+
+// scenarioGenPatchTooLarge: a command that succeeds but leaves more than 8 MiB
+// of new content ends failed at the patch stage, and the host takes the next
+// job (the global lock is released, the worktree is clean).
+func scenarioGenPatchTooLarge(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	sha := r.commit("a.txt", "one\n")
+
+	req := r.genReq(`head -c 9000000 /dev/zero | tr '\000' a > big.txt`, sha)
+	r.submit(req)
+	st := r.waitDone(req.ID)
+	wantState(t, st, "failed")
+	if st.Stage != "patch" || st.FailureKind != "user" {
+		t.Errorf("stage = %q, failure_kind = %q, want patch and user: %+v", st.Stage, st.FailureKind, st)
+	}
+	wantContains(t, "reason", st.Reason, "8 MiB")
+	if st.PatchSHA256 != "" || st.PatchSize != 0 {
+		t.Errorf("a job without a patch has patch_sha256 %q and patch_size %d", st.PatchSHA256, st.PatchSize)
+	}
+	_, err := r.c.Patch(t.Context(), req.ID)
+	wantRemote(t, err, runner.ErrCodeNoPatch)
+
+	next := r.req(`test ! -e big.txt && echo clean`, sha)
+	r.submit(next)
+	wantState(t, r.waitDone(next.ID), "succeeded")
+	wantContains(t, "log of the next job", r.logText(next.ID), "clean")
+	r.noProcs(req.ID)
+}
+
+// scenarioGenPatchReason: when the patch cannot be computed (here a git
+// repository without a commit left inside the tree), the job says why.
+func scenarioGenPatchReason(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	sha := r.commit("a.txt", "one\n")
+
+	req := r.genReq(`git init -q sub && printf 'x\n' > sub/f`, sha)
+	r.submit(req)
+	st := r.waitDone(req.ID)
+	if st.State != "failed" && st.State != "infra_failed" {
+		t.Fatalf("job %s is %s (%s), want failed or infra_failed: %+v", st.ID, st.State, st.Reason, st)
+	}
+	if st.Stage != "patch" {
+		t.Errorf("stage = %q, want patch: %+v", st.Stage, st)
+	}
+	if st.Reason == "" || st.Reason == "cannot compute the patch" {
+		t.Errorf("reason = %q, want the cause of the failure", st.Reason)
+	}
+	wantContains(t, "reason", st.Reason, "commit")
+	_, err := r.c.Patch(t.Context(), req.ID)
+	wantRemote(t, err, runner.ErrCodeNoPatch)
 }

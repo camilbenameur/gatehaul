@@ -31,44 +31,58 @@ type RunOptions struct {
 // Run sends a commit to a host, queues the command and waits at most
 // o.Block. It returns the exit code of the command.
 func (c *Controller) Run(ctx context.Context, o RunOptions) int {
+	rs, code := c.dispatch(ctx, o, runner.KindRun, false)
+	if rs == nil {
+		return code
+	}
+	return c.report(rs, false, o.JSON)
+}
+
+// dispatch sends a commit to a host, queues a job of the given kind and waits
+// at most o.Block. It returns the job as it stands then, or a nil list and the
+// exit code when it failed before there was a job to report (the error is
+// already printed). allowSensitive is kept in the job record, for wait and
+// apply.
+func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, allowSensitive bool) ([]*jobResult, int) {
+	verb := "gatehaul " + kind
 	if len(o.Cmd) == 0 {
-		return c.fail(o.JSON, usageError("no command given", "gatehaul run -- <cmd>"))
+		return nil, c.fail(o.JSON, usageError("no command given", verb+" -- <cmd>"))
 	}
 	if o.Prio < 0 || o.Prio > 9 {
-		return c.fail(o.JSON, usageError("--prio must be between 0 and 9", "gatehaul run --prio 5 -- <cmd>"))
+		return nil, c.fail(o.JSON, usageError("--prio must be between 0 and 9", verb+" --prio 5 -- <cmd>"))
 	}
 	if o.Timeout <= 0 || o.Block < 0 {
-		return c.fail(o.JSON, usageError("--timeout must be positive and --block must not be negative", "gatehaul run --timeout 30m --block 5m -- <cmd>"))
+		return nil, c.fail(o.JSON, usageError("--timeout must be positive and --block must not be negative", verb+" --timeout 30m --block 5m -- <cmd>"))
 	}
 
 	sha, fullRef, e := c.commit(ctx, o.Ref)
 	if e != nil {
-		return c.fail(o.JSON, e)
+		return nil, c.fail(o.JSON, e)
 	}
 	if o.Ref == "" {
 		if dirty, err := (detect.Git{Runner: c.Runner, Dir: c.Dir}).Dirty(ctx); err == nil && len(dirty) > 0 {
 			w := out.Warn("worktree", out.CodeDirtyTree,
 				fmt.Sprintf("%d uncommitted file(s) are NOT sent and NOT tested: %s", len(dirty), listPaths(dirty, 5)),
-				"commit them before gatehaul run, or stash them")
+				"commit them before "+verb+", or stash them")
 			fmt.Fprintf(c.Stderr, "warning: %s\nFix: %s\n", w.Message, w.Fix)
 		}
 	}
 
 	hosts, e := c.discover(ctx)
 	if e != nil {
-		return c.fail(o.JSON, e)
+		return nil, c.fail(o.JSON, e)
 	}
 	if len(hosts) == 0 {
-		return c.fail(o.JSON, &out.Error{Code: out.CodeNoHosts, Message: "no codespace of " + c.Repo + " is labelled " + host.DisplayPrefix + "<n>",
+		return nil, c.fail(o.JSON, &out.Error{Code: out.CodeNoHosts, Message: "no codespace of " + c.Repo + " is labelled " + host.DisplayPrefix + "<n>",
 			Fix: "gatehaul up", Exit: out.ExitInfra})
 	}
 	h, ok := pickHost(hosts, o.Host)
 	if !ok {
-		return c.fail(o.JSON, &out.Error{Code: out.CodeHostGone, Message: fmt.Sprintf("%s does not exist", host.DisplayName(o.Host)),
+		return nil, c.fail(o.JSON, &out.Error{Code: out.CodeHostGone, Message: fmt.Sprintf("%s does not exist", host.DisplayName(o.Host)),
 			Fix: fmt.Sprintf("gatehaul up -n %d", o.Host), Exit: out.ExitInfra})
 	}
 	if e := unusable(h); e != nil {
-		return c.fail(o.JSON, e)
+		return nil, c.fail(o.JSON, e)
 	}
 	switch h.State {
 	case host.Stopped:
@@ -78,34 +92,42 @@ func (c *Controller) Run(ctx context.Context, o RunOptions) int {
 	}
 	p, e := c.probe(ctx, h)
 	if e != nil {
-		return c.fail(o.JSON, e)
+		return nil, c.fail(o.JSON, e)
 	}
 
 	id, err := job.NewID(h.Num, c.Clock.Now(), c.Entropy)
 	if err != nil {
-		return c.fail(o.JSON, asError(err, out.CodeCacheError, "retry; if it persists, check that the system can provide random numbers"))
+		return nil, c.fail(o.JSON, asError(err, out.CodeCacheError, "retry; if it persists, check that the system can provide random numbers"))
 	}
 	req := runner.SubmitRequest{
-		ID: id, Key: job.BranchKey(fullRef), SHA: sha, Kind: runner.KindRun,
+		ID: id, Key: job.BranchKey(fullRef), SHA: sha, Kind: kind,
 		Prio: o.Prio, Timeout: o.Timeout, Cmd: CommandString(o.Cmd),
 	}
 	req.Fingerprint = runner.Fingerprint(req)
 
 	// dispatch.json is written before any connection carrying the job opens.
-	err = c.Cache.SaveDispatch(job.Dispatch{
+	d := job.Dispatch{
 		ID: id, Repo: c.Repo, Host: h.DisplayName, HostNum: h.Num, HostID: p.HostID, HostName: h.Name, Ref: fullRef,
 		Key: req.Key, SHA: sha, Kind: req.Kind, Cmd: req.Cmd, Fingerprint: req.Fingerprint,
 		SubmittedAt: c.Clock.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if kind == runner.KindGen {
+		// The patch of a gen job is applied to this work tree and no other.
+		if top, terr := (detect.Git{Runner: c.Runner, Dir: c.Dir}).TopLevel(ctx); terr == nil {
+			d.Top = top
+		}
+		d.AllowSensitive = allowSensitive
+	}
+	err = c.Cache.SaveDispatch(d)
 	if err != nil {
-		return c.fail(o.JSON, &out.Error{Code: out.CodeCacheError, Message: "cannot write the job record: " + err.Error(),
+		return nil, c.fail(o.JSON, &out.Error{Code: out.CodeCacheError, Message: "cannot write the job record: " + err.Error(),
 			Fix: "check the permissions of " + c.Cache.Dir() + " (set GATEHAUL_CACHE_DIR to move it)", Exit: out.ExitInfra})
 	}
 
 	tmp, err := os.MkdirTemp("", "gatehaul-bundle-")
 	if err != nil {
 		_ = c.Cache.Remove(id)
-		return c.fail(o.JSON, &out.Error{Code: out.CodeBundleFailed, Message: "cannot create a temporary directory: " + err.Error(),
+		return nil, c.fail(o.JSON, &out.Error{Code: out.CodeBundleFailed, Message: "cannot create a temporary directory: " + err.Error(),
 			Fix: "free some disk space, or set TMPDIR to a writable directory", Exit: out.ExitInfra})
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
@@ -116,7 +138,7 @@ func (c *Controller) Run(ctx context.Context, o RunOptions) int {
 		bases = bundle.Bases(p.Refs, sha, func(b string) bool { return bundle.IsAncestor(ctx, c.Runner, c.Dir, b, sha) })
 		if e := c.attachBundle(ctx, &req, id, bases, filepath.Join(tmp, "send.bundle")); e != nil {
 			_ = c.Cache.Remove(id)
-			return c.fail(o.JSON, e)
+			return nil, c.fail(o.JSON, e)
 		}
 	}
 
@@ -125,23 +147,23 @@ func (c *Controller) Run(ctx context.Context, o RunOptions) int {
 		// The host lacks a prerequisite: send everything, under the same id.
 		if e := c.attachBundle(ctx, &req, id, nil, filepath.Join(tmp, "full.bundle")); e != nil {
 			_ = c.Cache.Remove(id)
-			return c.fail(o.JSON, e)
+			return nil, c.fail(o.JSON, e)
 		}
 		sub, err = api.Submit(ctx, req)
 	}
 	if err != nil {
-		return c.submitFailure(o.JSON, err, h, id)
+		return nil, c.submitFailure(o.JSON, err, h, id)
 	}
 	state, perr := job.Parse(sub.State)
 	if perr != nil {
-		return c.fail(o.JSON, &out.Error{Code: out.CodeRunnerError, Message: fmt.Sprintf("%s answered %v for job %s", h.DisplayName, perr, id),
+		return nil, c.fail(o.JSON, &out.Error{Code: out.CodeRunnerError, Message: fmt.Sprintf("%s answered %v for job %s", h.DisplayName, perr, id),
 			Fix: "update gatehaul, then run: gatehaul wait " + id, Exit: out.ExitInfra})
 	}
 	c.cacheWarn(c.Cache.SaveStatus(runner.JobStatus{Schema: runner.Schema, ID: id, State: string(state), SHA: sha, HostID: p.HostID}))
 
-	d, err := c.Cache.LoadDispatch(id)
+	d, err = c.Cache.LoadDispatch(id)
 	if err != nil {
-		return c.fail(o.JSON, c.lookupError(err, id))
+		return nil, c.fail(o.JSON, c.lookupError(err, id))
 	}
 	rs, e := c.waitJobs(ctx, []job.Dispatch{d}, true, o.Block)
 	if e != nil {
@@ -152,9 +174,9 @@ func (c *Controller) Run(ctx context.Context, o RunOptions) int {
 		oe.Message += fmt.Sprintf(" (job %s was accepted and keeps running)", id)
 		oe.Fix = "gatehaul wait " + id
 		oe.ID = id
-		return c.fail(o.JSON, &oe)
+		return nil, c.fail(o.JSON, &oe)
 	}
-	return c.report(rs, false, o.JSON)
+	return rs, 0
 }
 
 // submitFailure maps a failed submit. A lost answer is never retried blindly;

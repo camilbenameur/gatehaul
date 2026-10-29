@@ -31,6 +31,8 @@ shopt -u patsub_replacement 2>/dev/null || true
 SCHEMA=1
 MAX_BUNDLE_BYTES=2147483648
 MAX_LOG_FILE=16777216
+MAX_PATCH_BYTES=8388608
+PATCH_TIMEOUT_S=120
 MAX_LOG_CHUNK=102400
 MAX_WAIT_S=60
 TURN_TIMEOUT_S=3600
@@ -47,6 +49,9 @@ RE_REQUEST='^GATEHAUL1 ([a-z_]+)$'
 
 # Entries of a worktree that "git clean" keeps between jobs (build caches).
 CLEAN_EXCLUDES=(-e /node_modules -e /.gradle -e /target -e /.venv)
+
+# A command put in front of git by gitw (patch_git sets it to a timeout).
+GITW_WRAP=()
 
 ROOT=${GATEHAUL_ROOT:-}
 JOBS=$ROOT/jobs
@@ -182,7 +187,7 @@ file_age() {
 gitw() {
   # No automatic gc (it would detach and keep our stdout open); fd 3 is closed
   # for git for the same reason. The explicit gc is in cmd_gc.
-  GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -c commit.gpgsign=false \
+  GIT_TERMINAL_PROMPT=0 "${GITW_WRAP[@]}" git -c core.hooksPath=/dev/null -c commit.gpgsign=false \
     -c credential.helper= -c protocol.allow=never -c protocol.file.allow=always \
     -c gc.auto=0 -c maintenance.auto=false "$@" 3>&-
 }
@@ -431,12 +436,18 @@ queue_pos() {
 # status_json ID TAIL_BYTES: the JobStatus of ID. exit.json is read first, then
 # the log, so that a terminal answer never carries a truncated log.
 status_json() {
-  local id=$1 tailb=$2 jd=$JOBS/$1 body size tail sha started='' state qpos=0
+  local id=$1 tailb=$2 jd=$JOBS/$1 body size tail sha started='' state qpos=0 psize
   if [ -e "$jd/exit.json" ]; then
     body=$(<"$jd/exit.json")
     body=${body%\}}
     size=$(log_size "$jd")
     tail=$(tail_b64 "$jd/log" "$tailb")
+    # write_exit stores patch_sha256 and patch_size together, for a gen job
+    # that succeeded; every other job answers an empty hash and size 0.
+    psize=$(jget "$jd/exit.json" patch_size)
+    if [ -z "$psize" ]; then
+      body="$body,\"patch_sha256\":\"\",\"patch_size\":0"
+    fi
     printf '%s,"queue_pos":0,"log_size":%s,"log_tail_b64":"%s"}' "$body" "$size" "$tail"
     return 0
   fi
@@ -449,7 +460,7 @@ status_json() {
     qpos=$(queue_pos "$id")
   fi
   size=$(log_size "$jd")
-  printf '{"schema":%s,"id":"%s","state":"%s","exit_code":null,"failure_kind":"","stage":"","reason":"","sha":"%s","host_id":"%s","queue_pos":%s,"started_at":"%s","ended_at":"","log_size":%s,"log_tail_b64":"","truncated":false,"tree_dirty_after":false}' \
+  printf '{"schema":%s,"id":"%s","state":"%s","exit_code":null,"failure_kind":"","stage":"","reason":"","sha":"%s","host_id":"%s","queue_pos":%s,"started_at":"%s","ended_at":"","log_size":%s,"log_tail_b64":"","truncated":false,"tree_dirty_after":false,"patch_sha256":"","patch_size":0}' \
     "$SCHEMA" "$id" "$state" "$sha" "$HOST_ID" "$qpos" "$started" "$size"
 }
 
@@ -982,6 +993,38 @@ cmd_log() {
   ok "{\"schema\":$SCHEMA,\"id\":\"$id\",\"state\":\"$state\",\"data_b64\":\"$data\",\"cursor\":$cursor,\"size\":$size,\"truncated\":$trunc}"
 }
 
+# ------------------------------------------------------------------ patch
+
+# cmd_patch: the patch of a gen job that succeeded. The hash is computed from
+# the file again, so that the controller checks what is really sent.
+cmd_patch() {
+  local id jd state size sum data
+  init_root
+  req_match id "$RE_ID"
+  id=${H[id]}
+  jd=$JOBS/$id
+  [ -e "$jd/meta.json" ] || die unknown_job "no such job: $id"
+  reconcile_job "$id"
+  if [ ! -e "$jd/exit.json" ]; then
+    die no_patch "the job has not finished yet"
+  fi
+  state=$(jget "$jd/exit.json" state)
+  if [ "$state" != succeeded ]; then
+    die no_patch "the job did not succeed (state: $state), so it has no patch"
+  fi
+  if [ ! -f "$jd/patch" ]; then
+    die no_patch "the job has no patch (it is not a gen job)"
+  fi
+  size=$(stat -c %s -- "$jd/patch")
+  if [ "$size" -gt "$MAX_PATCH_BYTES" ]; then
+    die patch_too_large "the patch is $size bytes, over the limit of $MAX_PATCH_BYTES"
+  fi
+  sum=$(sha256sum -- "$jd/patch")
+  sum=${sum%% *}
+  data=$(base64 -w0 <"$jd/patch")
+  ok "{\"schema\":$SCHEMA,\"id\":\"$id\",\"sha256\":\"$sum\",\"size\":$size,\"data_b64\":\"$data\"}"
+}
+
 # ------------------------------------------------------------------ cancel
 
 # wait_job_gone ID SECS: true once nobody holds the job's lock (at once if the
@@ -1176,6 +1219,75 @@ prepare_worktree() {
   return 1
 }
 
+# record_untracked: what is already untracked in the freshly prepared worktree
+# (the cache directories that "git clean" keeps between jobs) is not the work of
+# the command, so the patch leaves it out. untracked.pre has those paths (NUL
+# separated, ignored files included, a directory counted as one entry), and
+# patch.spec is the pathspec list of the patch computation made from it.
+record_untracked() {
+  local p=''
+  gitw -C "$WT" ls-files -o -z --directory >"$JD/untracked.pre" 2>/dev/null || return 1
+  {
+    printf '.\0'
+    while IFS= read -r -d '' p; do
+      printf ':(exclude,literal)%s\0' "$p"
+    done <"$JD/untracked.pre"
+  } >"$JD/patch.spec"
+}
+
+# patch_git ARGS: one git call of the patch computation. Nothing the command
+# left in the worktree's own git metadata (HEAD, index, config of the linked
+# worktree, a "core.worktree") is read: the repository is repo.git itself, the
+# work tree is $WT, and the index is a private file. The call gets what is left
+# of PATCH_DEADLINE. Runs in the subshell of compute_patch.
+patch_git() {
+  local left=$((PATCH_DEADLINE - EPOCHSECONDS)) rc=0
+  if [ "$left" -le 0 ]; then
+    return 124
+  fi
+  GITW_WRAP=(timeout --kill-after=5s "$left")
+  GIT_INDEX_FILE=$JD/patch.idx gitw -C "$WT" --git-dir="$REPO" --work-tree="$WT" \
+    -c core.fsmonitor=false -c core.autocrlf=false -c core.fileMode=true -c core.symlinks=true \
+    -c core.splitIndex=false -c core.untrackedCache=false -c core.sparseCheckout=false \
+    -c diff.ignoreSubmodules=none -c diff.submodule=short -c color.ui=never "$@" || rc=$?
+  GITW_WRAP=()
+  return "$rc"
+}
+
+# compute_patch: the patch of the command against the verified commit $JSHA, in
+# $JD/patch.tmp, run in a subshell. HEAD and the index of the worktree are not
+# trusted (the command may have committed, reset or edited the index): the
+# private index starts from $JSHA and gets the whole work tree. Bounded in time
+# (PATCH_TIMEOUT_S) and in size (ulimit -f, so that git cannot fill the disk).
+# git's stderr goes to patch.err. Returns git's status; 124 or 137 is the
+# timeout, 153 is SIGXFSZ (the size limit).
+compute_patch() {
+  local idx blocks
+  ulimit -c 0 2>/dev/null || true
+  rm -f -- "$JD/patch.idx" "$JD/patch.idx.lock" "$JD/patch.tmp"
+  : >"$JD/patch.err"
+  PATCH_DEADLINE=$((EPOCHSECONDS + PATCH_TIMEOUT_S))
+  patch_git read-tree "$JSHA" 2>>"$JD/patch.err" || return $?
+  idx=$(stat -c %s -- "$JD/patch.idx") || return 1
+  # ulimit -f counts 1024-byte blocks and applies to every file git writes: the
+  # index (as big as the tree), loose objects and the patch itself.
+  blocks=$(((2 * idx + 4 * MAX_PATCH_BYTES) / 1024 + 1))
+  ulimit -f "$blocks" 2>/dev/null || true
+  patch_git add -A --pathspec-from-file="$JD/patch.spec" --pathspec-file-nul 2>>"$JD/patch.err" || return $?
+  patch_git diff --cached --binary --full-index --no-ext-diff --no-textconv --no-renames \
+    --no-color --ignore-submodules=none --src-prefix=a/ --dst-prefix=b/ "$JSHA" -- \
+    >"$JD/patch.tmp" 2>>"$JD/patch.err" || return $?
+}
+
+# patch_err_tail: the last 200 bytes of git's stderr, as printable ASCII.
+patch_err_tail() {
+  local t=''
+  if [ -s "$JD/patch.err" ]; then
+    t=$(tail -c 200 -- "$JD/patch.err" | tr -c '[:print:]' ' ') || t=''
+  fi
+  printf '%s' "$t"
+}
+
 tool_versions() {
   local out='' t v
   cd -- "$WT" 2>/dev/null || return 0
@@ -1192,7 +1304,8 @@ tool_versions() {
 }
 
 job_main() {
-  local id=${1:-} rc=0 head i sid='' start='' f ts
+  local id=${1:-} rc=0 head i sid='' start='' f ts psize
+  local prc=0 pbytes=0 perr='' pmsg=''
   local state kind stage reason code ended duration queue_s cores unamestr manifest
   local -a unset_args set_args
 
@@ -1242,6 +1355,11 @@ job_main() {
   head=$(gitw -C "$WT" rev-parse --verify --quiet --end-of-options 'HEAD^{commit}') || head=
   if [ "$head" != "$JSHA" ]; then
     finish_early infra_failed infra verify-sha "the worktree is at ${head:-nothing}, not at $JSHA"
+  fi
+
+  # What the worktree already holds (kept caches) is not part of a gen patch.
+  if [ "$JKIND" = gen ] && ! record_untracked; then
+    finish_early infra_failed infra worktree "cannot list the untracked files of the worktree"
   fi
 
   # 5. started, then the command.
@@ -1354,19 +1472,41 @@ job_main() {
   fi
   PATCH_FIELD=
   if [ "$JKIND" = gen ] && [ "$state" = succeeded ]; then
-    if gitw -C "$WT" add -A -N >/dev/null 2>&1 \
-      && gitw -C "$WT" diff --binary --full-index --no-ext-diff --no-textconv --no-renames \
-        --src-prefix=a/ --dst-prefix=b/ HEAD >"$JD/patch.tmp" 2>/dev/null; then
+    prc=0
+    ( compute_patch ) || prc=$?
+    pbytes=0
+    if [ -f "$JD/patch.tmp" ]; then
+      pbytes=$(stat -c %s -- "$JD/patch.tmp") || pbytes=0
+    fi
+    rm -f -- "$JD/patch.idx" "$JD/patch.idx.lock"
+    perr=$(patch_err_tail)
+    if [ "$prc" -eq 0 ] && [ "$pbytes" -le "$MAX_PATCH_BYTES" ]; then
       mv -f -- "$JD/patch.tmp" "$JD/patch"
       ts=$(sha256sum -- "$JD/patch")
-      PATCH_FIELD=",\"patch_sha256\":\"${ts%% *}\""
+      psize=$(stat -c %s -- "$JD/patch")
+      PATCH_FIELD=",\"patch_sha256\":\"${ts%% *}\",\"patch_size\":$psize"
     else
       rm -f -- "$JD/patch.tmp"
-      state=infra_failed
-      kind=infra
       stage='patch'
-      code=null
-      reason="cannot compute the patch"
+      if [ "$prc" -eq 124 ] || [ "$prc" -eq 137 ]; then
+        state=failed
+        kind=user
+        pmsg="the command succeeded, but computing its patch took more than $PATCH_TIMEOUT_S s, so the result is unusable"
+      elif [ "$prc" -eq 0 ] || [ "$prc" -eq 153 ] || grep -q 'File too large' "$JD/patch.err" 2>/dev/null; then
+        state=failed
+        kind=user
+        pmsg="the command succeeded, but its patch is larger than $((MAX_PATCH_BYTES / 1048576)) MiB, so the result is unusable"
+      elif grep -q 'does not have a commit checked out' "$JD/patch.err" 2>/dev/null; then
+        state=failed
+        kind=user
+        pmsg="the command succeeded, but left a git repository without any commit inside the worktree, which cannot be part of a patch (git said: $perr)"
+      else
+        state=infra_failed
+        kind=infra
+        code=null
+        pmsg="cannot compute the patch (git exited with $prc${perr:+: $perr})"
+      fi
+      reason="${reason:+$reason; }$pmsg"
     fi
   fi
   if [ "$JKIND" = gen ]; then
@@ -1407,6 +1547,7 @@ main() {
     submit) cmd_submit ;;
     wait) cmd_wait ;;
     log) cmd_log ;;
+    patch) cmd_patch ;;
     cancel) cmd_cancel ;;
     gc) cmd_gc ;;
     *) die bad_request "unknown subcommand: $SUB" ;;

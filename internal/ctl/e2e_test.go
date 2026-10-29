@@ -164,3 +164,39 @@ func TestEndToEndLostAnswerIsOutcomeUnknownNeverADoubleJob(t *testing.T) {
 		t.Fatalf("jobs on the host: %v (%v), want exactly one", jobs, err)
 	}
 }
+
+func TestEndToEndGenAppliesThePatchOnceEvenAfterARestart(t *testing.T) {
+	e := newE2E(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	c, stdout, stderr := e.controller()
+	code := c.Gen(ctx, GenOptions{RunOptions: RunOptions{Prio: DefaultPrio, Timeout: time.Minute, Block: time.Minute, Cmd: []string{"echo changed > f.txt"}}})
+	if code != out.ExitOK {
+		t.Fatalf("gen: exit %d\nstdout %s\nstderr %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout.String(), "state=succeeded exit=0") || !strings.Contains(stdout.String(), "patch: applied 1 files") {
+		t.Fatalf("gen stdout %q", stdout.String())
+	}
+	got, err := os.ReadFile(filepath.Join(e.repo, "f.txt"))
+	if err != nil || string(got) != "changed\n" {
+		t.Fatalf("f.txt = %q, %v; want the command's change applied locally", got, err)
+	}
+	id := strings.TrimPrefix(strings.Fields(stdout.String())[0], "job=")
+
+	// The laptop restarted and the file was edited again: waiting for the same
+	// job must not apply its patch a second time.
+	if err := os.WriteFile(filepath.Join(e.repo, "f.txt"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c2, stdout2, stderr2 := e.controller()
+	if code := c2.Wait(ctx, WaitOptions{IDs: []string{id}, Block: time.Minute}); code != out.ExitOK {
+		t.Fatalf("wait: exit %d\nstdout %s\nstderr %s", code, stdout2, stderr2)
+	}
+	if !strings.Contains(stdout2.String(), "patch: already applied 1 files") {
+		t.Fatalf("wait stdout %q", stdout2.String())
+	}
+	if got, _ := os.ReadFile(filepath.Join(e.repo, "f.txt")); string(got) != "hello\n" {
+		t.Fatalf("f.txt = %q after the second wait", got)
+	}
+}

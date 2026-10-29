@@ -223,3 +223,123 @@ func TestDefaultCacheDir(t *testing.T) {
 		t.Error("no home: want an error")
 	}
 }
+
+func TestPatchRoundTripIsAtomicAndBinarySafe(t *testing.T) {
+	c := NewCache(t.TempDir())
+	if _, ok, err := c.LoadPatch(id1); ok || err != nil {
+		t.Fatalf("no patch yet: ok=%v err=%v", ok, err)
+	}
+	want := []byte("diff --git a/f b/f\n\x00\x01binary\r\n")
+	if err := c.SavePatch(id1, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := c.LoadPatch(id1)
+	if err != nil || !ok || string(got) != string(want) {
+		t.Fatalf("LoadPatch = %q, %v, %v", got, ok, err)
+	}
+	// Saving again replaces the file and leaves no temporary file behind.
+	if err := c.SavePatch(id1, []byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := c.LoadPatch(id1); string(got) != "second" {
+		t.Fatalf("second save: %q", got)
+	}
+	entries, err := os.ReadDir(filepath.Join(c.Dir(), "jobs", id1))
+	if err != nil || len(entries) != 1 || entries[0].Name() != "patch" {
+		t.Fatalf("job dir = %v, %v; want only patch", entries, err)
+	}
+	if err := c.SavePatch("../x", want); err == nil {
+		t.Error("SavePatch with a bad id: want an error")
+	}
+	if _, ok, err := c.LoadPatch("../x"); ok || err != nil {
+		t.Errorf("LoadPatch with a bad id: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAppliedRoundTrip(t *testing.T) {
+	c := NewCache(t.TempDir())
+	if _, ok, err := c.LoadApplied(id1); ok || err != nil {
+		t.Fatalf("not applied yet: ok=%v err=%v", ok, err)
+	}
+	want := Applied{SHA256: strings.Repeat("c", 64), Files: []string{"a.go", "b/c.txt"}, AppliedAt: "2026-10-29T12:00:00Z"}
+	if err := c.SaveApplied(id1, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := c.LoadApplied(id1)
+	if err != nil || !ok {
+		t.Fatalf("LoadApplied: ok=%v err=%v", ok, err)
+	}
+	if got.Schema != CacheSchema || got.SHA256 != want.SHA256 || got.AppliedAt != want.AppliedAt || strings.Join(got.Files, ",") != "a.go,b/c.txt" {
+		t.Fatalf("round trip: %+v", got)
+	}
+	if err := c.SaveApplied(id2, Applied{SHA256: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := c.LoadApplied(id2); got.Files == nil {
+		t.Error("a nil file list must be stored as an empty list")
+	}
+	if err := c.SaveApplied("nope", want); err == nil {
+		t.Error("SaveApplied with a bad id: want an error")
+	}
+}
+
+func TestDispatchKeepsTheTreeAndTheSensitiveOptIn(t *testing.T) {
+	c := NewCache(t.TempDir())
+	want := dispatch(id1, "o/r", strings.Repeat("a", 40))
+	want.Kind = runner.KindGen
+	want.Top = "/work/repo"
+	want.AllowSensitive = true
+	if err := c.SaveDispatch(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.LoadDispatch(id1)
+	if err != nil || got.Top != "/work/repo" || !got.AllowSensitive {
+		t.Fatalf("dispatch %+v, %v", got, err)
+	}
+	if dir := filepath.Join(c.Dir(), "jobs", id1); c.JobDir(id1) != dir {
+		t.Fatalf("JobDir = %q, want %q", c.JobDir(id1), dir)
+	}
+}
+
+func TestFindLatestGen(t *testing.T) {
+	c := NewCache(t.TempDir())
+	sha := strings.Repeat("a", 40)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	gen := func(id, repo, sha string) {
+		d := dispatch(id, repo, sha)
+		d.Kind = runner.KindGen
+		must(c.SaveDispatch(d))
+	}
+	if _, err := c.FindLatestGen("o/r", sha); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("empty cache: err = %v", err)
+	}
+	gen(id1, "o/r", sha)
+	must(c.SaveStatus(runner.JobStatus{ID: id1, State: "succeeded"}))
+	must(c.SaveDispatch(dispatch(id2, "o/r", sha))) // a run job: never chosen
+	must(c.SaveStatus(runner.JobStatus{ID: id2, State: "succeeded"}))
+	gen("1-01JB0000000000000000000004", "o/r", sha) // no status yet
+	gen("1-01JB0000000000000000000005", "o/r", sha)
+	must(c.SaveStatus(runner.JobStatus{ID: "1-01JB0000000000000000000005", State: "failed"}))
+	gen("1-01JB0000000000000000000006", "x/y", sha) // another repository
+	must(c.SaveStatus(runner.JobStatus{ID: "1-01JB0000000000000000000006", State: "succeeded"}))
+
+	// Whatever its state: the newest gen job of the repository and commit.
+	failed := "1-01JB0000000000000000000005"
+	got, err := c.FindLatestGen("o/r", sha)
+	if err != nil || got.ID != failed {
+		t.Fatalf("FindLatestGen = %q, %v; want the latest gen job %q", got.ID, err, failed)
+	}
+	later := "1-01JB0000000000000000000007"
+	gen(later, "o/r", sha) // no status yet: still the latest
+	if got, err = c.FindLatestGen("o/r", sha); err != nil || got.ID != later {
+		t.Fatalf("FindLatestGen = %q, %v; want the later job %q", got.ID, err, later)
+	}
+	if _, err = c.FindLatestGen("o/r", strings.Repeat("b", 40)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other commit: err = %v", err)
+	}
+}

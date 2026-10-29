@@ -1,8 +1,9 @@
 // Command gatehaul offloads a coding agent's builds and tests to remote
 // sandboxes and refuses green verdicts without proof that the tests ran.
 //
-// This release implements "doctor", "version", "up", "down", "run", "wait" and
-// "log"; the other commands are on the roadmap in docs/SPEC.md.
+// This release implements "doctor", "version", "up", "down", "run", "gen",
+// "apply", "wait" and "log"; the other commands are on the roadmap in
+// docs/SPEC.md.
 package main
 
 import (
@@ -34,7 +35,7 @@ func main() {
 
 // planned lists the commands of v0.1 that are not implemented yet.
 var planned = map[string]bool{
-	"gen": true, "status": true, "queue": true, "cancel": true, "gate": true, "hook": true,
+	"status": true, "queue": true, "cancel": true, "gate": true, "hook": true,
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -47,8 +48,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cmdDoctor(ctx, args[1:], stdout, stderr)
 	case cmd == "version" || cmd == "--version":
 		return cmdVersion(args[1:], stdout, stderr)
-	case cmd == "run":
-		return cmdRun(ctx, args[1:], stdout, stderr)
+	case cmd == "run" || cmd == "gen":
+		return cmdRun(ctx, cmd, args[1:], stdout, stderr)
+	case cmd == "apply":
+		return cmdApply(ctx, args[1:], stdout, stderr)
 	case cmd == "wait":
 		return cmdWait(ctx, args[1:], stdout, stderr)
 	case cmd == "log":
@@ -92,12 +95,17 @@ Usage:
                      stop (or delete) the hosts that run nothing and queue nothing
   gatehaul run [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--json] -- <cmd>
                      send a commit and run <cmd> on a host; waits at most --block (5m)
+  gatehaul gen [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--allow-sensitive] [--json] -- <cmd>
+                     like run, then apply the sanitised patch of the files <cmd> changed
+                     to your working tree (a refused patch exits 6)
+  gatehaul apply [<id>] [--allow-sensitive] [--json]
+                     apply the patch of a gen job that was not applied yet
   gatehaul wait [<id>...] [--any|--all] [--block D] [--json]
-                     wait for jobs; never cancels them
+                     wait for jobs; never cancels them (a finished gen job is applied)
   gatehaul log [<id>] [--grep RE] [--since N] [--tail N] [--json]
   gatehaul version [--json]
 
-Planned for v0.1: gen, status, queue, cancel, gate, hook.
+Planned for v0.1: status, queue, cancel, gate, hook.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 still running, 4 false green, 5 environment, 6 patch refused.
 `)

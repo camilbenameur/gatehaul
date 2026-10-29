@@ -95,18 +95,25 @@ func newController(ctx context.Context, c common, stdout, stderr io.Writer) (*ct
 	}), 0
 }
 
-func cmdRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	fs, c := newFlags("run", stderr)
+// cmdRun runs "run" and "gen", which take the same arguments: gen also
+// applies the patch of the files the command changed.
+func cmdRun(ctx context.Context, name string, args []string, stdout, stderr io.Writer) int {
+	fs, c := newFlags(name, stderr)
 	hostN := fs.Int("host", 0, "run on gatehaul-N (default: the first running host)")
 	prio := fs.Int("prio", ctl.DefaultPrio, "priority 0 to 9, lower runs first")
 	timeout := fs.Duration("timeout", ctl.DefaultTimeout, "kill the command after this long")
 	block := fs.Duration("block", ctl.DefaultBlock, "wait at most this long, then return the job id")
+	var allowSensitive *bool
+	synopsis := "gatehaul run [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--json] -- <cmd>"
+	if name == "gen" {
+		allowSensitive = fs.Bool("allow-sensitive", false, "apply a patch that touches sensitive paths (gatehaul.toml, workflows, hooks)")
+		synopsis = "gatehaul gen [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--allow-sensitive] [--json] -- <cmd>"
+	}
 	before, after, found := splitDash(args)
 	pos, err := parseInterspersed(fs, before)
 	if err != nil {
 		return flagExit(err)
 	}
-	const synopsis = "gatehaul run [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--json] -- <cmd>"
 	if !found || len(after) == 0 {
 		return usageFail(stderr, *c.json, "no command given after --", synopsis)
 	}
@@ -124,7 +131,32 @@ func cmdRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if ctrl == nil {
 		return code
 	}
-	return ctrl.Run(ctx, ctl.RunOptions{Ref: ref, Host: *hostN, Prio: *prio, Timeout: *timeout, Block: *block, JSON: *c.json, Cmd: after})
+	ro := ctl.RunOptions{Ref: ref, Host: *hostN, Prio: *prio, Timeout: *timeout, Block: *block, JSON: *c.json, Cmd: after}
+	if name == "gen" {
+		return ctrl.Gen(ctx, ctl.GenOptions{RunOptions: ro, AllowSensitive: *allowSensitive})
+	}
+	return ctrl.Run(ctx, ro)
+}
+
+func cmdApply(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs, c := newFlags("apply", stderr)
+	allowSensitive := fs.Bool("allow-sensitive", false, "apply a patch that touches sensitive paths (gatehaul.toml, workflows, hooks)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	if len(pos) > 1 {
+		return usageFail(stderr, *c.json, "unexpected argument "+pos[1], "gatehaul apply [<id>] [--allow-sensitive] [--json]")
+	}
+	id := ""
+	if len(pos) == 1 {
+		id = pos[0]
+	}
+	ctrl, code := newController(ctx, c, stdout, stderr)
+	if ctrl == nil {
+		return code
+	}
+	return ctrl.Apply(ctx, ctl.ApplyOptions{ID: id, AllowSensitive: *allowSensitive, JSON: *c.json})
 }
 
 func cmdWait(ctx context.Context, args []string, stdout, stderr io.Writer) int {

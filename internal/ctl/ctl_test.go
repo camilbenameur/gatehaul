@@ -68,6 +68,8 @@ type fakeAPI struct {
 	bundles    []string
 	waitFn     func(runner.WaitRequest) ([]runner.JobStatus, error)
 	logFn      func(runner.LogRequest) (runner.LogChunk, error)
+	patchFn    func(id string) (runner.PatchData, error)
+	patchCalls int
 }
 
 func newFakeAPI() *fakeAPI {
@@ -110,6 +112,16 @@ func (f *fakeAPI) Wait(_ context.Context, r runner.WaitRequest) ([]runner.JobSta
 
 func (f *fakeAPI) Log(_ context.Context, r runner.LogRequest) (runner.LogChunk, error) {
 	return f.logFn(r)
+}
+
+func (f *fakeAPI) Patch(_ context.Context, id string) (runner.PatchData, error) {
+	f.mu.Lock()
+	f.patchCalls++
+	f.mu.Unlock()
+	if f.patchFn == nil {
+		return runner.PatchData{}, fmt.Errorf("not used")
+	}
+	return f.patchFn(id)
 }
 
 func (f *fakeAPI) Cancel(context.Context, string) (runner.JobStatus, error) {

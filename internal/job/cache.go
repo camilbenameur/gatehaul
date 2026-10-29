@@ -35,6 +35,14 @@ type Dispatch struct {
 	Cmd         string `json:"cmd"`
 	Fingerprint string `json:"fingerprint"`
 	SubmittedAt string `json:"submitted_at"`
+
+	// Top is the top level of the work tree the job was dispatched from (a gen
+	// job only): its patch is applied there and nowhere else.
+	Top string `json:"top,omitempty"`
+
+	// AllowSensitive is set when gen ran with --allow-sensitive, so that wait
+	// and apply keep the opt-in.
+	AllowSensitive bool `json:"allow_sensitive,omitempty"`
 }
 
 // ErrNotFound means no cached job matches.
@@ -77,6 +85,11 @@ func NewCache(dir string) *Cache { return &Cache{dir: dir} }
 func (c *Cache) Dir() string { return c.dir }
 
 func (c *Cache) jobDir(id string) string { return filepath.Join(c.dir, "jobs", id) }
+
+// JobDir is jobs/<id>, the directory that holds the files of one job: the
+// apply lock and the files saved before a patch is written belong there. id
+// must come from a Dispatch.
+func (c *Cache) JobDir(id string) string { return c.jobDir(id) }
 
 // SaveDispatch writes dispatch.json for d.ID.
 func (c *Cache) SaveDispatch(d Dispatch) error {
@@ -249,6 +262,85 @@ func (c *Cache) FindLatest(repo, sha string) (Dispatch, error) {
 	return *last, nil
 }
 
+// FindLatestGen returns the most recent gen job of repo at sha, whatever its
+// state: the one whose patch "apply" brings back, once it has finished.
+func (c *Cache) FindLatestGen(repo, sha string) (Dispatch, error) {
+	all, err := c.List()
+	if err != nil {
+		return Dispatch{}, err
+	}
+	var last *Dispatch
+	for i := range all {
+		if all[i].Repo == repo && all[i].SHA == sha && all[i].Kind == runner.KindGen {
+			last = &all[i]
+		}
+	}
+	if last == nil {
+		return Dispatch{}, ErrNotFound
+	}
+	return *last, nil
+}
+
+// Applied records that the patch of a gen job was applied to the working tree,
+// so that nothing ever applies it twice. It is jobs/<id>/applied.json.
+type Applied struct {
+	Schema    int      `json:"schema"`
+	SHA256    string   `json:"sha256"`
+	Files     []string `json:"files"`
+	AppliedAt string   `json:"applied_at"`
+}
+
+// SavePatch stores the patch of a gen job in jobs/<id>/patch.
+func (c *Cache) SavePatch(id string, data []byte) error {
+	if !runner.IDPattern.MatchString(id) {
+		return fmt.Errorf("invalid job id %q", id)
+	}
+	return writeFile(filepath.Join(c.jobDir(id), "patch"), data)
+}
+
+// LoadPatch returns the stored patch. ok is false when there is none.
+func (c *Cache) LoadPatch(id string) (data []byte, ok bool, err error) {
+	if !runner.IDPattern.MatchString(id) {
+		return nil, false, nil
+	}
+	data, err = os.ReadFile(filepath.Join(c.jobDir(id), "patch"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+// SaveApplied records the application of the patch of job id.
+func (c *Cache) SaveApplied(id string, a Applied) error {
+	if !runner.IDPattern.MatchString(id) {
+		return fmt.Errorf("invalid job id %q", id)
+	}
+	a.Schema = CacheSchema
+	if a.Files == nil {
+		a.Files = []string{}
+	}
+	return writeJSON(filepath.Join(c.jobDir(id), "applied.json"), a)
+}
+
+// LoadApplied returns the record of an applied patch. ok is false when the
+// patch of the job was never applied.
+func (c *Cache) LoadApplied(id string) (a Applied, ok bool, err error) {
+	if !runner.IDPattern.MatchString(id) {
+		return Applied{}, false, nil
+	}
+	err = readJSON(filepath.Join(c.jobDir(id), "applied.json"), &a)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Applied{}, false, nil
+	}
+	if err != nil {
+		return Applied{}, false, err
+	}
+	return a, true, nil
+}
+
 func one(hits []Dispatch, what string) (Dispatch, error) {
 	switch len(hits) {
 	case 0:
@@ -277,7 +369,11 @@ func writeJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	b = append(b, '\n')
+	return writeFile(path, append(b, '\n'))
+}
+
+// writeFile writes b to path atomically, the way writeJSON does.
+func writeFile(path string, b []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

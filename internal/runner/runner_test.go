@@ -61,7 +61,7 @@ func TestScriptShape(t *testing.T) {
 func TestScriptHandlesEverySubcommand(t *testing.T) {
 	text := string(runner.Script())
 	for _, c := range []string{
-		runner.CmdProbe, runner.CmdSubmit, runner.CmdWait, runner.CmdLog, runner.CmdCancel, runner.CmdGC, "__job",
+		runner.CmdProbe, runner.CmdSubmit, runner.CmdWait, runner.CmdLog, runner.CmdCancel, runner.CmdGC, runner.CmdPatch, "__job",
 	} {
 		want := "\n    " + c + ")"
 		if c == "__job" {
@@ -91,7 +91,7 @@ func TestScriptKnowsEveryStateAndErrorCode(t *testing.T) {
 	for _, c := range []string{
 		runner.ErrCodeBadRequest, runner.ErrCodeUnknownJob, runner.ErrCodeConflict, runner.ErrCodeNeedFull,
 		runner.ErrCodeBundleInvalid, runner.ErrCodeBundleTooLarge, runner.ErrCodeSHAMismatch,
-		runner.ErrCodeMissingTool, runner.ErrCodeDiskFull,
+		runner.ErrCodeMissingTool, runner.ErrCodeDiskFull, runner.ErrCodeNoPatch, runner.ErrCodePatchTooLarge,
 	} {
 		if !strings.Contains(text, c) {
 			t.Errorf("runner.sh never answers with the error code %q", c)
@@ -104,6 +104,7 @@ func TestScriptSharesTheContractsLimitsAndPatterns(t *testing.T) {
 	for _, want := range []string{
 		"MAX_LOG_CHUNK=" + strconv.Itoa(runner.MaxLogChunk),
 		"MAX_LOG_FILE=" + strconv.Itoa(runner.MaxLogFile),
+		"MAX_PATCH_BYTES=" + strconv.Itoa(runner.MaxPatchBytes),
 		"MAX_BUNDLE_BYTES=" + strconv.FormatInt(int64(runner.MaxBundleBytes), 10),
 		fmt.Sprintf("MAX_WAIT_S=%d", int(runner.MaxWaitSlice/time.Second)),
 		"'" + runner.IDPattern.String() + "'",
@@ -198,6 +199,44 @@ func TestScriptGuards(t *testing.T) {
 	}
 	if strings.Contains(text, "cap_log") {
 		t.Errorf("the log is no longer cut after the fact: it would invalidate cursors")
+	}
+}
+
+func TestScriptPatchGuards(t *testing.T) {
+	text := string(runner.Script())
+	// The patch of a gen job is computed against the verified commit with a
+	// private index, on repo.git and the work tree given explicitly (nothing
+	// the command left in the worktree's .git is read), within a time and a size
+	// limit; the paths that were untracked before the command are left out;
+	// git's stderr is kept for the reason.
+	for _, want := range []string{
+		"PATCH_TIMEOUT_S=120",
+		`GIT_INDEX_FILE=$JD/patch.idx`,
+		`read-tree "$JSHA"`,
+		`--git-dir="$REPO" --work-tree="$WT"`,
+		"diff --cached --binary --full-index --no-ext-diff --no-textconv --no-renames",
+		"--ignore-submodules=none",
+		"core.fsmonitor=false",
+		"core.autocrlf=false",
+		"diff.ignoreSubmodules=none",
+		`"$JSHA" --`,
+		"ulimit -f",
+		"timeout --kill-after=5s",
+		"ls-files -o -z --directory",
+		":(exclude,literal)",
+		"--pathspec-from-file=",
+		"--pathspec-file-nul",
+		"patch.err",
+		"tail -c 200",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("runner.sh does not contain %q", want)
+		}
+	}
+	for _, bad := range []string{"add -A -N", "--exclude-standard"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("runner.sh must not contain %q: the patch is not computed from the worktree's own index", bad)
+		}
 	}
 }
 
