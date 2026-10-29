@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -37,10 +38,29 @@ type Runner interface {
 	Run(ctx context.Context, argv []string, stdin io.Reader, timeout time.Duration) (Result, error)
 }
 
+// EnvRunner is a Runner that can also add environment variables to the
+// command. Each entry of env is "KEY=value" and is appended to the environment
+// of the current process, so a later entry wins over an earlier one.
+type EnvRunner interface {
+	RunEnv(ctx context.Context, env []string, argv []string, stdin io.Reader, timeout time.Duration) (Result, error)
+}
+
 // ExecRunner runs real processes.
 type ExecRunner struct{}
 
-func (ExecRunner) Run(ctx context.Context, argv []string, stdin io.Reader, timeout time.Duration) (Result, error) {
+var (
+	_ Runner    = ExecRunner{}
+	_ EnvRunner = ExecRunner{}
+	_ EnvRunner = (*Fake)(nil)
+)
+
+// Run runs argv with the environment of the current process.
+func (e ExecRunner) Run(ctx context.Context, argv []string, stdin io.Reader, timeout time.Duration) (Result, error) {
+	return e.RunEnv(ctx, nil, argv, stdin, timeout)
+}
+
+// RunEnv runs argv with env added to the environment of the current process.
+func (ExecRunner) RunEnv(ctx context.Context, env []string, argv []string, stdin io.Reader, timeout time.Duration) (Result, error) {
 	if len(argv) == 0 {
 		return Result{}, errors.New("ghx: empty command")
 	}
@@ -51,6 +71,9 @@ func (ExecRunner) Run(ctx context.Context, argv []string, stdin io.Reader, timeo
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = stdin
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	stdout := &capped{max: maxOutput}
 	stderr := &capped{max: maxOutput}
 	cmd.Stdout = stdout
@@ -109,6 +132,13 @@ type Fake struct {
 	mu        sync.Mutex
 	responses []Response
 	calls     [][]string
+	envCalls  []EnvCall
+}
+
+// EnvCall is a call made through RunEnv: its argv and the extra environment.
+type EnvCall struct {
+	Argv []string
+	Env  []string
 }
 
 // Response scripts the answer to every call whose argv starts with Prefix.
@@ -138,9 +168,36 @@ func (f *Fake) Calls() [][]string {
 	return out
 }
 
+// EnvCalls returns every call made through RunEnv, with the environment it
+// was given. These calls are also part of Calls.
+func (f *Fake) EnvCalls() []EnvCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]EnvCall, len(f.envCalls))
+	copy(out, f.envCalls)
+	return out
+}
+
+// Run matches argv against the scripted responses.
 func (f *Fake) Run(ctx context.Context, argv []string, stdin io.Reader, timeout time.Duration) (Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.answer(ctx, argv)
+}
+
+// RunEnv matches argv exactly like Run and records env.
+func (f *Fake) RunEnv(ctx context.Context, env []string, argv []string, stdin io.Reader, timeout time.Duration) (Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.envCalls = append(f.envCalls, EnvCall{
+		Argv: append([]string(nil), argv...),
+		Env:  append([]string(nil), env...),
+	})
+	return f.answer(ctx, argv)
+}
+
+// answer records the call and finds its scripted response; f.mu is held.
+func (f *Fake) answer(ctx context.Context, argv []string) (Result, error) {
 	f.calls = append(f.calls, append([]string(nil), argv...))
 	if err := ctx.Err(); err != nil {
 		return Result{}, err

@@ -3,8 +3,11 @@ package runner_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -514,5 +517,92 @@ func TestPreambleIsSentFirstOnEveryCall(t *testing.T) {
 	}
 	if !bytes.HasSuffix(s.stdins[0], []byte("GATEHAUL1 probe\n\n")) {
 		t.Errorf("stdin does not end with the probe request")
+	}
+}
+
+// patchReply builds the reply of a "patch" call for data, announcing sha and
+// size as given.
+func patchReply(data []byte, sha string, size int64) string {
+	return reply(fmt.Sprintf(`{"schema":1,"id":%q,"sha256":%q,"size":%d,"data_b64":%q}`,
+		testID, sha, size, base64.StdEncoding.EncodeToString(data)))
+}
+
+func hexSHA(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func TestPatchDecodesAndVerifies(t *testing.T) {
+	data := []byte("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
+	s := &scripted{fn: writeString(patchReply(data, hexSHA(data), int64(len(data))))}
+	c, _ := newTestClient(s)
+	p, err := c.Patch(t.Context(), testID)
+	if err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	got, err := base64.StdEncoding.DecodeString(p.DataB64)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Errorf("patch data = %q, %v; want %q", got, err, data)
+	}
+	if p.ID != testID || p.Size != int64(len(data)) || p.SHA256 != hexSHA(data) {
+		t.Errorf("patch = %+v", p)
+	}
+	want := "GATEHAUL1 patch\nid=" + testID + "\n\n"
+	if !strings.HasSuffix(string(s.stdins[0]), want) {
+		t.Errorf("patch request does not end with %q", want)
+	}
+}
+
+func TestPatchEmptyIsValid(t *testing.T) {
+	s := &scripted{fn: writeString(patchReply(nil, hexSHA(nil), 0))}
+	c, _ := newTestClient(s)
+	p, err := c.Patch(t.Context(), testID)
+	if err != nil || p.Size != 0 || p.DataB64 != "" {
+		t.Fatalf("patch = %+v, %v; want an empty patch", p, err)
+	}
+}
+
+func TestPatchBiggerThanTheDefaultReplyBound(t *testing.T) {
+	// 3 MiB of data is more than 4 MiB of base64: the client must allow for it.
+	data := bytes.Repeat([]byte("0123456789abcdef"), (3<<20)/16)
+	s := &scripted{fn: writeString(patchReply(data, hexSHA(data), int64(len(data))))}
+	c, _ := newTestClient(s)
+	if _, err := c.Patch(t.Context(), testID); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+}
+
+func TestPatchRejectsWhatDoesNotMatch(t *testing.T) {
+	data := []byte("patch bytes\n")
+	other := []byte("other bytes\n")
+	notBase64 := reply(fmt.Sprintf(`{"schema":1,"id":%q,"sha256":%q,"size":3,"data_b64":"!!!"}`, testID, hexSHA(data)))
+	cases := map[string]string{
+		"sha mismatch":  patchReply(data, hexSHA(other), int64(len(data))),
+		"size mismatch": patchReply(data, hexSHA(data), int64(len(data))+1),
+		"not base64":    notBase64,
+	}
+	for name, out := range cases {
+		c, _ := newTestClient(&scripted{fn: writeString(out)})
+		if _, err := c.Patch(t.Context(), testID); !errors.Is(err, runner.ErrProtocol) {
+			t.Errorf("%s: error = %v, want ErrProtocol", name, err)
+		}
+	}
+}
+
+func TestPatchRemoteErrorAndBadID(t *testing.T) {
+	out := "GATEHAUL1 HELLO v\nGATEHAUL1 BEGIN\n" +
+		`{"schema":1,"error":{"code":"no_patch","message":"the job did not succeed"}}` + "\nGATEHAUL1 END 1\n"
+	s := &scripted{fn: writeString(out)}
+	c, _ := newTestClient(s)
+	_, err := c.Patch(t.Context(), testID)
+	var re *runner.RemoteError
+	if !errors.As(err, &re) || re.Code != runner.ErrCodeNoPatch {
+		t.Fatalf("error = %v, want a RemoteError with code %q", err, runner.ErrCodeNoPatch)
+	}
+	if _, err := c.Patch(t.Context(), "not-an-id"); err == nil {
+		t.Errorf("an invalid id was accepted")
+	}
+	if len(s.stdins) != 1 {
+		t.Errorf("%d connections, want 1: an invalid id is refused locally", len(s.stdins))
 	}
 }

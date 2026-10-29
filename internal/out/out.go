@@ -63,6 +63,22 @@ const (
 	CodeCreateFailed       Code = "create_failed"
 	CodeCreateUnknown      Code = "create_unknown"
 	CodeInterrupted        Code = "interrupted"
+
+	// Patches of gen jobs (M3). patch_refused, patch_conflict and
+	// patch_too_large exit 6; patch_mismatch (the sha256 is not the one the
+	// host reported) and patch_error (git failed while checking or applying)
+	// exit 5. no_patch means the job is not a gen job or did not succeed;
+	// job_not_finished means it has not ended yet. stale_base (exit 6) means
+	// the working tree is not the commit the job ran on, and the patch touches
+	// files that differ between the two.
+	CodePatchRefused  Code = "patch_refused"
+	CodePatchConflict Code = "patch_conflict"
+	CodePatchTooLarge Code = "patch_too_large"
+	CodePatchMismatch Code = "patch_mismatch"
+	CodePatchError    Code = "patch_error"
+	CodeNoPatch       Code = "no_patch"
+	CodeJobNotDone    Code = "job_not_finished"
+	CodeStaleBase     Code = "stale_base"
 )
 
 // Level is the severity of a check.

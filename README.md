@@ -2,7 +2,7 @@
 
 **Offload your coding agents' builds and tests to remote sandboxes, and get proof they actually ran.**
 
-> **Status: early development.** `doctor`, `version`, `up`, `down`, `run`, `wait` and `log` work today, on one codespace (milestone M2); gates, `gen` and several-host scheduling are planned.
+> **Status: early development.** `doctor`, `version`, `up`, `down`, `run`, `wait`, `log`, `gen` and `apply` work today, on one codespace (milestones M2 and M3); gates and several-host scheduling are planned.
 
 ## Why
 
@@ -32,8 +32,12 @@ gatehaul up                      # create gatehaul-1 (asks first: it uses your q
 gatehaul run -- go test ./...    # send HEAD, run it on the codespace; returns a job id after --block (5m)
 gatehaul wait                    # wait for the pending job of HEAD; never cancels it
 gatehaul log --tail 50           # the end of the log of the latest job of HEAD
+gatehaul gen -- gofmt -w .       # run, then apply the sanitized patch of the files it changed (exit 6 if refused)
+gatehaul apply                   # apply the patch of the latest finished gen job of HEAD, if it was not applied yet
 gatehaul down                    # stop the codespaces that run nothing
 ```
+
+A patch is checked on a tree diff before anything is written (modes, paths, symlinks, case collisions, size limits) and is never applied twice. Paths that change how the project builds or what the agent runs (`gatehaul.toml`, workflows, hooks) are refused unless you pass `--allow-sensitive`; other sensitive paths are applied and listed. If the patch does not apply to your working tree, `gen` exits 6 with `patch_conflict`: commit or stash your edits, then `gatehaul apply <id>`.
 
 A job survives the laptop: `gatehaul wait <id>` finds it again from the local job cache. If the answer to a submit is lost, `run` exits 5 with `outcome_unknown` and `next: gatehaul wait <id>`, and never submits twice.
 
@@ -41,7 +45,6 @@ Planned for v0.1:
 
 ```bash
 gatehaul gate                    # run the inferred gate and compute the verdict locally
-gatehaul gen -- gofmt -w .       # run, then apply the sanitized patch locally
 ```
 
 ## Fair use
