@@ -1,5 +1,5 @@
 // Package detect infers everything gatehaul needs from the working directory,
-// so that no configuration file is required (PLAN Â§2). Every inferred value
+// so that no configuration file is required (docs/SPEC.md §2). Every inferred value
 // records where it came from, for "gatehaul doctor --json".
 package detect
 
