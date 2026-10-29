@@ -67,7 +67,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		out.WriteError(stderr, false, &out.Error{
 			Code:    out.CodeUsage,
 			Message: "gatehaul " + cmd + " is not implemented yet",
-			Fix:     "see the roadmap in docs/SPEC.md; gatehaul doctor works today",
+			Fix:     "see the status column in docs/SPEC.md §3",
 		})
 		return out.ExitUsage
 	default:
