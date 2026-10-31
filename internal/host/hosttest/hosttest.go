@@ -87,6 +87,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) host.Backend) {
 		{"gen_without_changes_has_an_empty_patch", scenarioGenEmpty},
 		{"gen_patch_is_against_the_base_commit", scenarioGenCommitted},
 		{"gen_patch_leaves_out_kept_caches", scenarioGenKeptCache},
+		{"nested_node_modules_is_kept", scenarioNestedCacheKept},
 		{"gen_patch_over_the_limit_fails", scenarioGenPatchTooLarge},
 		{"gen_patch_failure_has_a_reason", scenarioGenPatchReason},
 	}
@@ -1371,6 +1372,26 @@ func scenarioGenKeptCache(t *testing.T, b host.Backend) {
 	if data := r.patchBytes(st); len(data) != 0 {
 		t.Errorf("the patch of a gen job that changed nothing is %q, want empty", data)
 	}
+}
+
+// scenarioNestedCacheKept: a node_modules below the root (a front end in a
+// subdirectory) survives the reset between two jobs on the same branch, like
+// the one at the root.
+func scenarioNestedCacheKept(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	if err := os.MkdirAll(filepath.Join(r.repo, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sha := r.commit("web/package.json", "{}\n")
+
+	first := r.req(`mkdir -p web/node_modules/pkg && printf 'cache' > web/node_modules/pkg/y`, sha)
+	r.submit(first)
+	wantState(t, r.waitDone(first.ID), "succeeded")
+
+	second := r.req(`cat web/node_modules/pkg/y && echo; test -z "$(git status --porcelain --untracked-files=no)"`, sha)
+	r.submit(second)
+	wantState(t, r.waitDone(second.ID), "succeeded")
+	wantContains(t, "log of the second job", r.logText(second.ID), "cache")
 }
 
 // scenarioGenPatchTooLarge: a command that succeeds but leaves more than 8 MiB

@@ -47,8 +47,10 @@ RE_B64='^[A-Za-z0-9+/]*={0,2}$'
 RE_VALUE='^[A-Za-z0-9._:,/+=-]*$'
 RE_REQUEST='^GATEHAUL1 ([a-z_]+)$'
 
-# Entries of a worktree that "git clean" keeps between jobs (build caches).
-CLEAN_EXCLUDES=(-e /node_modules -e /.gradle -e /target -e /.venv)
+# Untracked build caches that "git clean" keeps between jobs. node_modules,
+# .gradle, .venv and .cache are kept at any depth (a front end often lives in a
+# subdirectory); target only at the root. Tracked files are never affected.
+CLEAN_EXCLUDES=(-e node_modules -e .gradle -e /target -e .venv -e .cache)
 
 # A command put in front of git by gitw (patch_git sets it to a timeout).
 GITW_WRAP=()
