@@ -88,6 +88,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) host.Backend) {
 		{"gen_patch_is_against_the_base_commit", scenarioGenCommitted},
 		{"gen_patch_leaves_out_kept_caches", scenarioGenKeptCache},
 		{"nested_node_modules_is_kept", scenarioNestedCacheKept},
+		{"gen_patch_leaves_out_ignored_caches", scenarioGenIgnoredCache},
 		{"gen_patch_over_the_limit_fails", scenarioGenPatchTooLarge},
 		{"gen_patch_failure_has_a_reason", scenarioGenPatchReason},
 	}
@@ -1371,6 +1372,30 @@ func scenarioGenKeptCache(t *testing.T, b host.Backend) {
 	wantState(t, st, "succeeded")
 	if data := r.patchBytes(st); len(data) != 0 {
 		t.Errorf("the patch of a gen job that changed nothing is %q, want empty", data)
+	}
+}
+
+// scenarioGenIgnoredCache: an ignored cache that exists before a gen job
+// (node_modules, listed in .gitignore) neither breaks the patch nor enters it,
+// even when the command empties .gitignore.
+func scenarioGenIgnoredCache(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	sha := r.commit(".gitignore", "node_modules/\n")
+
+	first := r.req(`mkdir -p node_modules && printf 'old' > node_modules/x`, sha)
+	r.submit(first)
+	wantState(t, r.waitDone(first.ID), "succeeded")
+
+	second := r.genReq(`ls node_modules/x && printf 'new\n' > c.txt && : > .gitignore`, sha)
+	r.submit(second)
+	st := r.waitDone(second.ID)
+	wantState(t, st, "succeeded")
+	data := r.patchBytes(st)
+	if strings.Contains(string(data), "node_modules/x") {
+		t.Errorf("the patch holds the ignored cache that predates the command:\n%s", data)
+	}
+	if !strings.Contains(string(data), "c.txt") || !strings.Contains(string(data), ".gitignore") {
+		t.Errorf("the patch misses the command's changes:\n%s", data)
 	}
 }
 

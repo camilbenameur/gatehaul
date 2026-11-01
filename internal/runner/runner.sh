@@ -1223,18 +1223,30 @@ prepare_worktree() {
 
 # record_untracked: what is already untracked in the freshly prepared worktree
 # (the cache directories that "git clean" keeps between jobs) is not the work of
-# the command, so the patch leaves it out. untracked.pre has those paths (NUL
-# separated, ignored files included, a directory counted as one entry), and
-# patch.spec is the pathspec list of the patch computation made from it.
+# the command, so the patch leaves it out. Untracked files that .gitignore does
+# not cover go to untracked.pre and become ":(exclude,literal)" entries of
+# patch.spec. Ignored ones go to ignored.pre and become anchored patterns of
+# pre-ignored, passed as core.excludesFile: git refuses a pathspec that names an
+# ignored path, and this way a command that edits .gitignore cannot pull an old
+# cache into its patch. NUL separated; a directory counts as one entry.
 record_untracked() {
-  local p=''
-  gitw -C "$WT" ls-files -o -z --directory >"$JD/untracked.pre" 2>/dev/null || return 1
+  local p='' q=''
+  gitw -C "$WT" ls-files -o -z --directory --exclude-standard >"$JD/untracked.pre" 2>/dev/null || return 1
+  gitw -C "$WT" ls-files -o -z --directory --ignored --exclude-standard >"$JD/ignored.pre" 2>/dev/null || return 1
   {
     printf '.\0'
     while IFS= read -r -d '' p; do
       printf ':(exclude,literal)%s\0' "$p"
     done <"$JD/untracked.pre"
   } >"$JD/patch.spec"
+  {
+    while IFS= read -r -d '' p; do
+      case $p in *$'\n'*) continue ;; esac
+      # Escape the glob characters and a trailing space, then anchor at the root.
+      q=$(printf '%s' "$p" | sed -e 's/[][*?\\]/\\&/g' -e 's/ $/\\ /')
+      printf '/%s\n' "$q"
+    done <"$JD/ignored.pre"
+  } >"$JD/pre-ignored"
 }
 
 # patch_git ARGS: one git call of the patch computation. Nothing the command
@@ -1275,7 +1287,7 @@ compute_patch() {
   # index (as big as the tree), loose objects and the patch itself.
   blocks=$(((2 * idx + 4 * MAX_PATCH_BYTES) / 1024 + 1))
   ulimit -f "$blocks" 2>/dev/null || true
-  patch_git add -A --pathspec-from-file="$JD/patch.spec" --pathspec-file-nul 2>>"$JD/patch.err" || return $?
+  patch_git -c core.excludesFile="$JD/pre-ignored" add -A --pathspec-from-file="$JD/patch.spec" --pathspec-file-nul 2>>"$JD/patch.err" || return $?
   patch_git diff --cached --binary --full-index --no-ext-diff --no-textconv --no-renames \
     --no-color --ignore-submodules=none --src-prefix=a/ --dst-prefix=b/ "$JSHA" -- \
     >"$JD/patch.tmp" 2>>"$JD/patch.err" || return $?
