@@ -1376,22 +1376,22 @@ func scenarioGenKeptCache(t *testing.T, b host.Backend) {
 }
 
 // scenarioGenIgnoredCache: an ignored cache that exists before a gen job
-// (node_modules under a .gitignore) neither breaks the patch nor enters it,
+// (node_modules, listed in .gitignore) neither breaks the patch nor enters it,
 // even when the command empties .gitignore.
 func scenarioGenIgnoredCache(t *testing.T, b host.Backend) {
 	r := newRig(t, b)
-	sha := r.commit(".gitignore", "cache/\n")
+	sha := r.commit(".gitignore", "node_modules/\n")
 
-	first := r.req(`mkdir -p cache && printf 'old' > cache/x`, sha)
+	first := r.req(`mkdir -p node_modules && printf 'old' > node_modules/x`, sha)
 	r.submit(first)
 	wantState(t, r.waitDone(first.ID), "succeeded")
 
-	second := r.genReq(`ls cache/x && printf 'new\n' > c.txt && : > .gitignore`, sha)
+	second := r.genReq(`ls node_modules/x && printf 'new\n' > c.txt && : > .gitignore`, sha)
 	r.submit(second)
 	st := r.waitDone(second.ID)
 	wantState(t, st, "succeeded")
 	data := r.patchBytes(st)
-	if strings.Contains(string(data), "cache/x") {
+	if strings.Contains(string(data), "node_modules/x") {
 		t.Errorf("the patch holds the ignored cache that predates the command:\n%s", data)
 	}
 	if !strings.Contains(string(data), "c.txt") || !strings.Contains(string(data), ".gitignore") {
