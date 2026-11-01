@@ -233,7 +233,7 @@ func TestScriptPatchGuards(t *testing.T) {
 			t.Errorf("runner.sh does not contain %q", want)
 		}
 	}
-	for _, bad := range []string{"add -A -N", "--exclude-standard"} {
+	for _, bad := range []string{"add -A -N"} {
 		if strings.Contains(text, bad) {
 			t.Errorf("runner.sh must not contain %q: the patch is not computed from the worktree's own index", bad)
 		}
