@@ -40,7 +40,9 @@ const (
 	CodeNoGitHubRemote Code = "no_github_remote"
 	CodeNoCommit       Code = "no_commit"
 	CodeDirtyTree      Code = "dirty_tree"
+	CodeUntracked      Code = "untracked_files"
 	CodeNoGate         Code = "no_gate"
+	CodeGateSubdir     Code = "gate_in_subdirectory"
 	CodeNoHosts        Code = "no_hosts"
 	CodeSkipped        Code = "skipped"
 

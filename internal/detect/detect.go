@@ -187,21 +187,46 @@ func (g Git) Head(ctx context.Context) (Value, error) {
 
 // Dirty returns the paths with uncommitted changes. They are never sent.
 func (g Git) Dirty(ctx context.Context) ([]string, error) {
-	res, err := g.run(ctx, "status", "--porcelain=v1", "--untracked-files=normal")
+	ch, err := g.Changes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !res.OK() {
-		return nil, ErrNotRepo
+	return ch.all, nil
+}
+
+// Changes splits the uncommitted paths of the work tree. Modified holds the
+// tracked files that are modified, staged, deleted or renamed; Untracked the
+// files git does not know. Neither is ever sent.
+type Changes struct {
+	Modified  []string
+	Untracked []string
+	all       []string // every path, in git status order
+}
+
+// Changes reads git status and splits its paths into modified and untracked.
+func (g Git) Changes(ctx context.Context) (Changes, error) {
+	res, err := g.run(ctx, "status", "--porcelain=v1", "--untracked-files=normal")
+	if err != nil {
+		return Changes{}, err
 	}
-	var paths []string
+	if !res.OK() {
+		return Changes{}, ErrNotRepo
+	}
+	var ch Changes
 	for _, line := range strings.Split(string(res.Stdout), "\n") {
 		line = strings.TrimRight(line, "\r")
-		if len(line) > 3 {
-			paths = append(paths, line[3:])
+		if len(line) <= 3 {
+			continue
+		}
+		p := line[3:]
+		ch.all = append(ch.all, p)
+		if strings.HasPrefix(line, "??") {
+			ch.Untracked = append(ch.Untracked, p)
+		} else {
+			ch.Modified = append(ch.Modified, p)
 		}
 	}
-	return paths, nil
+	return ch, nil
 }
 
 // Gate is the test command inferred from the project files.
@@ -230,6 +255,54 @@ func DetectGate(fsys fs.FS) (gate Gate, ok bool) {
 		return Gate{Command: "pytest --junitxml=.gatehaul/junit.xml", Parser: "junit", Source: "pyproject.toml"}, true
 	}
 	return Gate{}, false
+}
+
+// skipDirs are never searched for a gate: dependencies, build output, caches.
+var skipDirs = map[string]bool{
+	"node_modules": true, "vendor": true, "target": true, "dist": true, "build": true,
+	"venv": true, "__pycache__": true,
+}
+
+// FindGate is DetectGate for monorepos. It looks at the root first, then in
+// the subdirectories, breadth first (so the shallowest wins) down to maxDepth
+// levels, in the order fs.ReadDir returns them (lexical). Directories whose
+// name starts with a dot, and dependency or build directories, are skipped.
+// dir is the slash-separated path of the directory the gate was found in, ""
+// for the root.
+func FindGate(fsys fs.FS, maxDepth int) (gate Gate, dir string, ok bool) {
+	if g, found := DetectGate(fsys); found {
+		return g, "", true
+	}
+	level := []string{"."}
+	for depth := 1; depth <= maxDepth; depth++ {
+		var next []string
+		for _, parent := range level {
+			entries, err := fs.ReadDir(fsys, parent)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				name := e.Name()
+				if !e.IsDir() || strings.HasPrefix(name, ".") || skipDirs[name] {
+					continue
+				}
+				p := name
+				if parent != "." {
+					p = parent + "/" + name
+				}
+				sub, err := fs.Sub(fsys, p)
+				if err != nil {
+					continue
+				}
+				if g, found := DetectGate(sub); found {
+					return g, p, true
+				}
+				next = append(next, p)
+			}
+		}
+		level = next
+	}
+	return Gate{}, "", false
 }
 
 func exists(fsys fs.FS, name string) bool {

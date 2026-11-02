@@ -173,27 +173,44 @@ func Run(ctx context.Context, o Options) Report {
 			add(out.OK("commit", "HEAD is "+short(head.Value)))
 		}
 
-		dirty, err := g.Dirty(ctx)
+		ch, err := g.Changes(ctx)
 		switch {
 		case err != nil:
 			add(out.Fail("worktree", out.CodeNotGitRepo, "cannot read git status: "+err.Error(), "run git status by hand to see the error"))
-		case len(dirty) > 0:
-			add(out.Warn("worktree", out.CodeDirtyTree,
-				fmt.Sprintf("%d uncommitted file(s) are NOT sent and NOT tested: %s", len(dirty), list(dirty, 5)),
-				"commit them before gatehaul run, or stash them"))
 		default:
-			add(out.OK("worktree", "clean"))
+			switch {
+			case len(ch.Modified) > 0:
+				add(out.Warn("worktree", out.CodeDirtyTree,
+					fmt.Sprintf("%d modified file(s) are not committed, so NOT sent and NOT tested: %s", len(ch.Modified), list(ch.Modified, 5)),
+					"commit them before gatehaul run, or stash them"))
+			case len(ch.Untracked) > 0:
+				add(out.OK("worktree", "no modified file"))
+			default:
+				add(out.OK("worktree", "clean"))
+			}
+			if len(ch.Untracked) > 0 {
+				add(out.Warn("untracked", out.CodeUntracked,
+					fmt.Sprintf("%d untracked file(s) are not in git, so not sent: %s", len(ch.Untracked), list(ch.Untracked, 5)),
+					"git add and commit them if the build needs them; otherwise ignore them (add them to .gitignore)"))
+			}
 		}
 	}
 
+	const gateRole = "the gate is only used by gatehaul gate (planned); gatehaul run -- <cmd> works without it"
 	if top == "" {
 		add(out.Skip("gate", "repo"))
-	} else if gate, ok := detect.DetectGate(o.DirFS(top)); ok {
-		r.Resolved["gate"] = detect.Value{Value: gate.Command, Source: gate.Source, Fallback: "gatehaul gate -- <cmd>, or a gatehaul.toml"}
+	} else if gate, dir, ok := detect.FindGate(o.DirFS(top), gateSearchDepth); ok && dir == "" {
+		r.Resolved["gate"] = detect.Value{Value: gate.Command, Source: gate.Source, Fallback: "a gatehaul.toml"}
 		add(out.OK("gate", gate.Command+" (from "+gate.Source+")"))
+	} else if ok {
+		r.Resolved["gate"] = detect.Value{Value: gate.Command, Source: dir + "/" + gate.Source, Fallback: "a gatehaul.toml"}
+		add(out.Warn("gate", out.CodeGateSubdir,
+			fmt.Sprintf("no test command at the repository root; found %s in %s (%s). %s", gate.Source, dir, gate.Command, gateRole),
+			subdirFix(gate, dir)))
 	} else {
-		add(out.Warn("gate", out.CodeNoGate, "no test command recognised (looked for gatehaul.toml, go.mod, package.json with a test script, Cargo.toml, pyproject.toml)",
-			"run gatehaul gate -- <your test command>, or add a gatehaul.toml"))
+		add(out.Warn("gate", out.CodeNoGate,
+			"no test command recognised at the root or in subdirectories (looked for gatehaul.toml, go.mod, package.json with a test script, Cargo.toml, pyproject.toml); "+gateRole,
+			"nothing to do for gatehaul run; to test a subdirectory: gatehaul run --cd <dir> -- <your test command>"))
 	}
 
 	// The codespaces gatehaul may use.
@@ -229,6 +246,25 @@ func Run(ctx context.Context, o Options) Report {
 		}
 	}
 	return r
+}
+
+// gateSearchDepth is how many directory levels below the root doctor searches
+// for a project when the root has none.
+const gateSearchDepth = 3
+
+// subdirFix is a runnable command for the gate found in dir.
+func subdirFix(g detect.Gate, dir string) string {
+	switch g.Source {
+	case "go.mod":
+		return "gatehaul run --cd " + dir + " -- go test ./..."
+	case "package.json":
+		return "gatehaul run --cd " + dir + " -- npm test"
+	case "Cargo.toml":
+		return "gatehaul run --cd " + dir + " -- cargo test"
+	case "pyproject.toml":
+		return "gatehaul run --cd " + dir + " -- pytest"
+	}
+	return "gatehaul run --cd " + dir + " -- <your test command> (a gatehaul.toml is only read at the repository root)"
 }
 
 func authFailure(err error, host string) out.Check {

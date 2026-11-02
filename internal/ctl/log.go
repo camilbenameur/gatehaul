@@ -63,10 +63,10 @@ func (c *Controller) Log(ctx context.Context, o LogOptions) int {
 	switch found {
 	case hostGone:
 		return c.fail(o.JSON, &out.Error{Code: out.CodeHostGone, Message: d.Host + " no longer exists, so the log of " + d.ID + " is gone",
-			Fix: "gatehaul up, then run the command again: gatehaul run -- " + shellQuote(d.Cmd), Exit: out.ExitInfra})
+			Fix: "gatehaul up, then run the command again: " + rerun(d), Exit: out.ExitInfra})
 	case hostRecreated:
 		return c.fail(o.JSON, &out.Error{Code: out.CodeHostReplaced, Message: d.Host + " was recreated, so the log of " + d.ID + " is gone",
-			Fix: "gatehaul run -- " + shellQuote(d.Cmd), Exit: out.ExitInfra})
+			Fix: rerun(d), Exit: out.ExitInfra})
 	}
 	if e := unusable(h); e != nil {
 		return c.fail(o.JSON, e)
@@ -109,8 +109,8 @@ func (c *Controller) Log(ctx context.Context, o LogOptions) int {
 func (c *Controller) unknownLog(ctx context.Context, h host.Host, d job.Dispatch) *out.Error {
 	if p, e := c.probe(ctx, h); e == nil && p.HostID != "" && d.HostID != "" && p.HostID != d.HostID {
 		return &out.Error{Code: out.CodeHostReplaced, Message: d.Host + " was recreated, so the log of " + d.ID + " is gone",
-			Fix: "gatehaul run -- " + shellQuote(d.Cmd), Exit: out.ExitInfra}
+			Fix: rerun(d), Exit: out.ExitInfra}
 	}
 	return &out.Error{Code: out.CodeNoSuchJob, Message: h.DisplayName + " does not know job " + d.ID,
-		Fix: "gatehaul doctor; if the host cleaned it up, run the command again: gatehaul run -- " + shellQuote(d.Cmd), Exit: out.ExitInfra}
+		Fix: "gatehaul doctor; if the host cleaned it up, run the command again: " + rerun(d), Exit: out.ExitInfra}
 }
