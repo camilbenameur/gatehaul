@@ -60,7 +60,7 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 	if e != nil {
 		return nil, c.fail(o.JSON, e)
 	}
-	sub, e := cleanSubdir(o.Dir, verb)
+	subdir, e := cleanSubdir(o.Dir, verb)
 	if e != nil {
 		return nil, c.fail(o.JSON, e)
 	}
@@ -113,7 +113,7 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 		}
 	}
 	if !o.JSON {
-		fmt.Fprintln(c.Stderr, sendingLine(refName(fullRef, o.Ref), sha, h.DisplayName, sub, extra))
+		fmt.Fprintln(c.Stderr, sendingLine(refName(fullRef, o.Ref), sha, h.DisplayName, subdir, extra))
 	}
 	p, e := c.probe(ctx, h)
 	if e != nil {
@@ -125,8 +125,8 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 		return nil, c.fail(o.JSON, asError(err, out.CodeCacheError, "retry; if it persists, check that the system can provide random numbers"))
 	}
 	cmdStr := CommandString(o.Cmd)
-	if sub != "" {
-		cmdStr = guardedCommand(sub, sha, cmdStr)
+	if subdir != "" {
+		cmdStr = guardedCommand(subdir, sha, cmdStr)
 	}
 	req := runner.SubmitRequest{
 		ID: id, Key: job.BranchKey(fullRef), SHA: sha, Kind: kind,
@@ -139,7 +139,7 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 	// commands it suggests (rerun) are the ones the user would type.
 	d := job.Dispatch{
 		ID: id, Repo: c.Repo, Host: h.DisplayName, HostNum: h.Num, HostID: p.HostID, HostName: h.Name, Ref: fullRef,
-		Key: req.Key, SHA: sha, Kind: req.Kind, Cmd: CommandString(o.Cmd), Dir: sub, Fingerprint: req.Fingerprint,
+		Key: req.Key, SHA: sha, Kind: req.Kind, Cmd: CommandString(o.Cmd), Dir: subdir, Fingerprint: req.Fingerprint,
 		SubmittedAt: c.Clock.Now().UTC().Format(time.RFC3339),
 	}
 	if kind == runner.KindGen {
