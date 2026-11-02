@@ -1,0 +1,14 @@
+{
+  "name": "gatehaul",
+  "displayName": "gatehaul",
+  "version": "0.1.0-alpha.2",
+  "description": "Run builds, tests and code generators in your own GitHub Codespaces, as asynchronous jobs that survive the session, with patches checked before they touch your working tree.",
+  "author": {
+    "name": "Camil Benameur",
+    "url": "https://github.com/camilbenameur"
+  },
+  "homepage": "https://github.com/camilbenameur/gatehaul",
+  "repository": "https://github.com/camilbenameur/gatehaul",
+  "license": "Apache-2.0",
+  "keywords": ["codespaces", "remote-build", "testing", "agents", "ci", "sandbox"]
+}
