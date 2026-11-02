@@ -73,10 +73,12 @@ If the laptop disconnects at any step, `gatehaul wait <id>` resumes from where i
 
 ## Quickstart
 
-There are no release binaries yet; build from source with Go 1.26 or later.
+Download the binary for your system from the [latest pre-release](https://github.com/camilbenameur/gatehaul/releases) and check it against `SHA256SUMS`, or build from source with Go 1.26 or later:
 
 ```bash
-go install github.com/camilbenameur/gatehaul/cmd/gatehaul@latest
+gh release download --pattern "gatehaul_*_linux_amd64" --pattern SHA256SUMS -R camilbenameur/gatehaul   # or darwin_arm64, windows_amd64.exe...
+sha256sum --check --ignore-missing SHA256SUMS
+go install github.com/camilbenameur/gatehaul/cmd/gatehaul@latest   # or from source
 gh auth refresh -h github.com -s codespace   # once: gatehaul drives codespaces through gh
 cd your-repo
 gatehaul doctor                  # checks gh, auth, the codespace scope, git, the repo and the hosts; prints a fix for each problem
@@ -101,7 +103,8 @@ gatehaul down                    # stops the codespaces that run nothing
 | 🔜 | Gates with proof of execution: zero tests fails, the test count only goes down with human approval, a false green exits 4 | next |
 | 🔜 | Several codespaces behind one queue: `queue`, `status`, `cancel`, `wait --any`, priorities | next |
 | 🔜 | A Claude Code `Stop` hook that refuses to end a turn without a green gate on `HEAD` | next |
-| 🔜 | Release binaries with checksums, and an install script | next |
+| ✅ | Pre-release binaries for Linux, macOS and Windows, with `SHA256SUMS` | done |
+| 🔜 | An install script and signed releases | next |
 
 Exit codes: `0` ok, `1` the command failed, `2` usage, `3` still running, `4` false green, `5` environment, `6` patch refused.
 
