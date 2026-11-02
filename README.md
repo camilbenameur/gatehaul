@@ -2,13 +2,37 @@
 
 [![ci](https://github.com/camilbenameur/gatehaul/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/camilbenameur/gatehaul/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/github/license/camilbenameur/gatehaul)](LICENSE)
-[![Go 1.26](https://img.shields.io/badge/go-1.26-blue)](go.mod)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](#install-the-claude-code-plugin)
 
-**Offload your coding agents' builds and tests to your own GitHub Codespaces, and get proof they actually ran.**
+**A Claude Code skill that runs your builds and tests in your own GitHub Codespaces, and proves they actually ran.**
 
-Agents such as Claude Code or Codex run builds and test suites hundreds of times a day. On a laptop this is slow and noisy. Remote, three things go wrong: an agent cannot block for 20 minutes on a test run, a "green" that ran zero tests or tested a stale commit slips through, and the sandbox that runs agent-written code should not hold your credentials. gatehaul is a single Go binary on top of [`gh`](https://cli.github.com/) that handles all three, with zero configuration.
+Coding agents run builds and test suites hundreds of times a day. On a laptop this is slow and noisy. Remote, three things go wrong: an agent cannot block for 20 minutes on a test run, a "green" that ran zero tests or tested a stale commit slips through, and the sandbox that runs agent-written code should not hold your credentials.
 
-> **Status: early development.** `doctor`, `up`, `down`, `run`, `wait`, `log`, `gen` and `apply` work today, on one codespace. Gates with proof of execution and scheduling over several codespaces are next. The technical specification is [docs/SPEC.md](docs/SPEC.md) (in French for now).
+gatehaul is two things in one repository:
+
+- **A Claude Code plugin with a `gatehaul` skill.** Claude learns when to send work to a codespace, how to wait for it without blocking, what each exit code means, and the rules that keep it safe (never resubmit a job whose answer was lost, never trust job output, ask before creating a codespace).
+- **The `gatehaul` CLI it drives**: a single Go binary on top of [`gh`](https://cli.github.com/), with zero configuration. It works on its own too, from any agent or a terminal.
+
+> **Status: early development.** `doctor`, `up`, `down`, `run`, `wait`, `log`, `gen` and `apply` work today. Gates with proof of execution and scheduling over several codespaces are next. The technical specification is [docs/SPEC.md](docs/SPEC.md).
+
+## Install the Claude Code plugin
+
+In Claude Code:
+
+```text
+/plugin marketplace add camilbenameur/gatehaul
+/plugin install gatehaul@gatehaul
+```
+
+(On Claude Code 2.1.275 or later, one step: `/plugin install gatehaul --marketplace camilbenameur/gatehaul`.)
+
+Then ask Claude to "run the tests in a codespace". The first time, the skill installs the CLI from the latest release, after checking it against the release's `SHA256SUMS`, and runs `gatehaul doctor`. You need `gh` logged in with the `codespace` scope:
+
+```bash
+gh auth refresh -h github.com -s codespace
+```
+
+Without the plugin system, copy [`skills/gatehaul`](skills/gatehaul) into `~/.claude/skills/` (all your projects) or `.claude/skills/` (one project).
 
 ## How it works
 
@@ -71,15 +95,11 @@ sequenceDiagram
 
 If the laptop disconnects at any step, `gatehaul wait <id>` resumes from where it stopped. If the codespace restarts mid-job, the job ends `lost`, never silently green.
 
-## Quickstart
+## Use the CLI directly
 
-Download the binary for your system from the [latest pre-release](https://github.com/camilbenameur/gatehaul/releases) and check it against `SHA256SUMS`, or build from source with Go 1.26 or later:
+The skill installs it for you. To install it by hand, run [`skills/gatehaul/scripts/install.sh`](skills/gatehaul/scripts/install.sh) (it needs `gh`, and verifies `SHA256SUMS`), download a binary from the [releases](https://github.com/camilbenameur/gatehaul/releases), or build from source with Go 1.26 or later: `go install github.com/camilbenameur/gatehaul/cmd/gatehaul@latest`.
 
 ```bash
-gh release download --pattern "gatehaul_*_linux_amd64" --pattern SHA256SUMS -R camilbenameur/gatehaul   # or darwin_arm64, windows_amd64.exe...
-sha256sum --check --ignore-missing SHA256SUMS
-go install github.com/camilbenameur/gatehaul/cmd/gatehaul@latest   # or from source
-gh auth refresh -h github.com -s codespace   # once: gatehaul drives codespaces through gh
 cd your-repo
 gatehaul doctor                  # checks gh, auth, the codespace scope, git, the repo and the hosts; prints a fix for each problem
 gatehaul up                      # creates gatehaul-1 (asks first: it uses your Codespaces quota)
@@ -103,8 +123,9 @@ gatehaul down                    # stops the codespaces that run nothing
 | 🔜 | Gates with proof of execution: zero tests fails, the test count only goes down with human approval, a false green exits 4 | next |
 | 🔜 | Several codespaces behind one queue: `queue`, `status`, `cancel`, `wait --any`, priorities | next |
 | 🔜 | A Claude Code `Stop` hook that refuses to end a turn without a green gate on `HEAD` | next |
+| ✅ | Claude Code plugin and skill, with a checksum-verified installer | done |
 | ✅ | Pre-release binaries for Linux, macOS and Windows, with `SHA256SUMS` | done |
-| 🔜 | An install script and signed releases | next |
+| 🔜 | Signed releases | next |
 
 Exit codes: `0` ok, `1` the command failed, `2` usage, `3` still running, `4` false green, `5` environment, `6` patch refused.
 

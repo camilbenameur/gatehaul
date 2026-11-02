@@ -1,0 +1,21 @@
+{
+  "name": "gatehaul",
+  "description": "gatehaul: a Claude Code plugin that runs builds, tests and code generators in your own GitHub Codespaces.",
+  "owner": {
+    "name": "Camil Benameur",
+    "url": "https://github.com/camilbenameur"
+  },
+  "plugins": [
+    {
+      "name": "gatehaul",
+      "source": "./",
+      "description": "Run builds, tests and code generators in your own GitHub Codespaces, with jobs that survive the session and checked patches.",
+      "category": "development",
+      "tags": [
+        "codespaces",
+        "remote-build",
+        "testing"
+      ]
+    }
+  ]
+}
