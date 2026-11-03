@@ -93,9 +93,11 @@ Usage:
                      without a terminal, --yes is required)
   gatehaul down [--delete] [--json]
                      stop (or delete) the hosts that run nothing and queue nothing
-  gatehaul run [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--json] -- <cmd>
-                     send a commit and run <cmd> on a host; waits at most --block (5m)
-  gatehaul gen [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--allow-sensitive] [--json] -- <cmd>
+  gatehaul run [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--cd DIR] [--json] -- <cmd>
+                     send a commit and run <cmd> on a host; waits at most --block (5m).
+                     --cd DIR runs <cmd> in DIR, a directory of the repository relative
+                     to its root (default: the root); -C is your local directory
+  gatehaul gen [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--cd DIR] [--allow-sensitive] [--json] -- <cmd>
                      like run, then apply the sanitised patch of the files <cmd> changed
                      to your working tree (a refused patch exits 6)
   gatehaul apply [<id>] [--allow-sensitive] [--json]

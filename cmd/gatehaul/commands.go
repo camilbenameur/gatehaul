@@ -103,11 +103,12 @@ func cmdRun(ctx context.Context, name string, args []string, stdout, stderr io.W
 	prio := fs.Int("prio", ctl.DefaultPrio, "priority 0 to 9, lower runs first")
 	timeout := fs.Duration("timeout", ctl.DefaultTimeout, "kill the command after this long")
 	block := fs.Duration("block", ctl.DefaultBlock, "wait at most this long, then return the job id")
+	cd := fs.String("cd", "", "run <cmd> in this directory of the repository, relative to its root (-C is the local directory)")
 	var allowSensitive *bool
-	synopsis := "gatehaul run [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--json] -- <cmd>"
+	synopsis := "gatehaul run [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--cd DIR] [--json] -- <cmd>"
 	if name == "gen" {
 		allowSensitive = fs.Bool("allow-sensitive", false, "apply a patch that touches sensitive paths (gatehaul.toml, workflows, hooks)")
-		synopsis = "gatehaul gen [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--allow-sensitive] [--json] -- <cmd>"
+		synopsis = "gatehaul gen [<ref>] [--host N] [--prio P] [--timeout D] [--block D] [--cd DIR] [--allow-sensitive] [--json] -- <cmd>"
 	}
 	before, after, found := splitDash(args)
 	pos, err := parseInterspersed(fs, before)
@@ -131,7 +132,7 @@ func cmdRun(ctx context.Context, name string, args []string, stdout, stderr io.W
 	if ctrl == nil {
 		return code
 	}
-	ro := ctl.RunOptions{Ref: ref, Host: *hostN, Prio: *prio, Timeout: *timeout, Block: *block, JSON: *c.json, Cmd: after}
+	ro := ctl.RunOptions{Ref: ref, Host: *hostN, Prio: *prio, Timeout: *timeout, Block: *block, JSON: *c.json, Dir: *cd, Cmd: after}
 	if name == "gen" {
 		return ctrl.Gen(ctx, ctl.GenOptions{RunOptions: ro, AllowSensitive: *allowSensitive})
 	}

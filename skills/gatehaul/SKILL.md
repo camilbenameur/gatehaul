@@ -20,9 +20,9 @@ gatehaul only uses codespaces whose display name is `gatehaul-1`, `gatehaul-2`�
 
 ## 3. The loop
 
-1. **Commit first.** Only commits are sent. Uncommitted edits are not tested; `run` warns about them.
-2. **Run:** `gatehaul run -- <command>` (for example `gatehaul run -- go test ./...`). One argument after `--` is a shell string; several are quoted and joined. Useful options, placed before `--`: `<ref>` to send another branch or commit, `--block 8m` to wait longer before returning, `--timeout 60m` for a long suite, `--json` for machine output.
-3. **Read the first line:** `job=<id> state=<state> exit=<code>`, then the end of the log, then sometimes `next: <command>`. **Do exactly what `next:` says.**
+1. **Commit first.** Only commits are sent. A *modified* tracked file (`dirty_tree` warning) is not tested until committed: commit it. An *untracked* file (`untracked_files` warning) is not in git, so not sent: `git add` it if the build needs it, otherwise ignore the warning (junk such as a crash dump).
+2. **Run:** `gatehaul run -- <command>` (for example `gatehaul run -- go test ./...`). One argument after `--` is a shell string; several are quoted and joined. Useful options, placed before `--`: `<ref>` to send another branch or commit, `--block 8m` to wait longer before returning, `--timeout 60m` for a long suite, `--json` for machine output, `--cd src/api` to run in a subdirectory of the repository (relative to its root; `-C` is your local directory, not this).
+3. **Read the first line:** `job=<id> state=<state> exit=<code>`, then the end of the log, then sometimes `next: <command>`. **Do exactly what `next:` says. No `next:` line means nothing is left to do.** A `# kind=… stage=…` line appears only for a job that did not succeed. `doctor` warning about a missing gate does not block `run`.
 4. **Still running (exit 3):** call `gatehaul wait <id>` (a unique prefix of the id is enough). `wait` never cancels anything; call it again as long as it returns 3.
 5. **Logs:** `gatehaul log <id> --tail 100`, `--grep <regex>`, or `--since <byte cursor>` to read the rest. Output is capped to protect your context.
 6. **Generators:** `gatehaul gen -- <command>` runs a command that changes files (`gofmt -w .`, `go mod tidy`, a code generator), then applies the resulting patch to the local working tree, uncommitted. Review the diff, commit, then `run` again to verify.

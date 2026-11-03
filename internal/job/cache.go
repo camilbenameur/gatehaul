@@ -33,6 +33,7 @@ type Dispatch struct {
 	SHA         string `json:"sha"`
 	Kind        string `json:"kind"`
 	Cmd         string `json:"cmd"`
+	Dir         string `json:"dir,omitempty"` // --cd: directory of the repository the command ran in
 	Fingerprint string `json:"fingerprint"`
 	SubmittedAt string `json:"submitted_at"`
 

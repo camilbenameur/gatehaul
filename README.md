@@ -66,7 +66,7 @@ flowchart LR
     San -->|"checked, then applied"| WT
 ```
 
-- **Commits in.** `run` sends the commit of `HEAD` as an incremental `git bundle`, never your uncommitted files. The job checks out that exact sha and verifies it before running.
+- **Commits in.** `run` sends the commit of `HEAD` as an incremental `git bundle`, never your uncommitted files: `run` warns about modified tracked files (not tested until committed) and, more softly, about untracked files (not in git, so not sent). The job checks out that exact sha and verifies it before running.
 - **Jobs outlive the agent.** The job is detached on the codespace. `run` waits at most `--block` (5 minutes), then hands back a job id; `wait` and `log` pick it up later, even after the laptop slept. A lost answer is never resubmitted blindly: the submit is idempotent and `wait <id>` finds the one job.
 - **Patches out.** `gen` runs a command that changes files (`gofmt -w .`, a code generator) and brings the change back as a patch. The patch is hostile input, so it is checked on a tree diff before anything is written, and applied once.
 - **No setup on the codespace.** Every call carries the runner script; a codespace with `bash`, `git` and coreutils is enough. One SSH round trip per call, about 5 s.
@@ -104,6 +104,7 @@ cd your-repo
 gatehaul doctor                  # checks gh, auth, the codespace scope, git, the repo and the hosts; prints a fix for each problem
 gatehaul up                      # creates gatehaul-1 (asks first: it uses your Codespaces quota)
 gatehaul run -- go test ./...    # sends HEAD, runs it, returns a job id after 5 minutes if it is still running
+gatehaul run --cd src/api -- go test ./...   # same, in a subdirectory of the repository (relative to its root)
 gatehaul wait                    # waits for the pending job of HEAD; never cancels it
 gatehaul log --tail 50           # the end of its log
 gatehaul gen -- gofmt -w .       # runs, then applies the patch of the files it changed
