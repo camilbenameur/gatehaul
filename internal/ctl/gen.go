@@ -201,7 +201,7 @@ func (c *Controller) patchOf(ctx context.Context, r *jobResult, allowSensitive b
 	if !sha256RE.MatchString(expected) {
 		return &patchOutcome{err: &out.Error{Code: out.CodePatchMismatch,
 			Message: fmt.Sprintf("the host reported no valid sha256 for the patch of job %s (%q)", id, expected),
-			Fix:     "nothing was applied; update gatehaul, then run: gatehaul gen -- " + shellQuote(r.d.Cmd), Exit: out.ExitInfra, ID: id}}
+			Fix:     "nothing was applied; update gatehaul, then run: " + rerun(r.d), Exit: out.ExitInfra, ID: id}}
 	}
 
 	lctx, cancel := context.WithTimeout(ctx, applyLockWait)
@@ -379,7 +379,7 @@ func (c *Controller) checkBase(ctx context.Context, d job.Dispatch, top string, 
 	stale := func(head, why string) *out.Error {
 		return refusal(out.CodeStaleBase, d.ID,
 			fmt.Sprintf("job %s ran on commit %s, but the work tree %s is at %s (%s), so its patch was not applied", d.ID, short(d.SHA), top, head, why),
-			"check out the dispatched commit with git checkout "+d.SHA+" and run: gatehaul apply "+d.ID+"; or run again on this commit: gatehaul gen -- "+shellQuote(d.Cmd))
+			"check out the dispatched commit with git checkout "+d.SHA+" and run: gatehaul apply "+d.ID+"; or run again on this commit: "+rerun(d))
 	}
 	head, err := (detect.Git{Runner: c.Runner, Dir: top}).Head(ctx)
 	if errors.Is(err, detect.ErrNoCommit) {
@@ -466,10 +466,10 @@ func (c *Controller) fetchPatch(ctx context.Context, d job.Dispatch) (runner.Pat
 	switch found {
 	case hostGone:
 		return runner.PatchData{}, &out.Error{Code: out.CodeHostGone, Message: d.Host + " no longer exists, so the patch of " + d.ID + " is gone",
-			Fix: "gatehaul up, then run the command again: gatehaul gen -- " + shellQuote(d.Cmd), Exit: out.ExitInfra}
+			Fix: "gatehaul up, then run the command again: " + rerun(d), Exit: out.ExitInfra}
 	case hostRecreated:
 		return runner.PatchData{}, &out.Error{Code: out.CodeHostReplaced, Message: d.Host + " was recreated, so the patch of " + d.ID + " is gone",
-			Fix: "gatehaul gen -- " + shellQuote(d.Cmd), Exit: out.ExitInfra}
+			Fix: rerun(d), Exit: out.ExitInfra}
 	}
 	if e := unusable(h); e != nil {
 		return runner.PatchData{}, e

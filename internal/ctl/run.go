@@ -25,6 +25,7 @@ type RunOptions struct {
 	Timeout time.Duration
 	Block   time.Duration
 	JSON    bool
+	Dir     string // --cd: run in this directory of the repository, relative to its root
 	Cmd     []string
 }
 
@@ -59,12 +60,24 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 	if e != nil {
 		return nil, c.fail(o.JSON, e)
 	}
+	subdir, e := cleanSubdir(o.Dir, verb)
+	if e != nil {
+		return nil, c.fail(o.JSON, e)
+	}
 	if o.Ref == "" {
-		if dirty, err := (detect.Git{Runner: c.Runner, Dir: c.Dir}).Dirty(ctx); err == nil && len(dirty) > 0 {
-			w := out.Warn("worktree", out.CodeDirtyTree,
-				fmt.Sprintf("%d uncommitted file(s) are NOT sent and NOT tested: %s", len(dirty), listPaths(dirty, 5)),
-				"commit them before "+verb+", or stash them")
-			fmt.Fprintf(c.Stderr, "warning: %s\nFix: %s\n", w.Message, w.Fix)
+		if ch, err := (detect.Git{Runner: c.Runner, Dir: c.Dir}).Changes(ctx); err == nil {
+			if len(ch.Modified) > 0 {
+				w := out.Warn("worktree", out.CodeDirtyTree,
+					fmt.Sprintf("%d modified file(s) are not committed, so NOT sent and NOT tested: %s", len(ch.Modified), listPaths(ch.Modified, 5)),
+					"commit them before "+verb+", or stash them")
+				fmt.Fprintf(c.Stderr, "warning: %s\nFix: %s\n", w.Message, w.Fix)
+			}
+			if len(ch.Untracked) > 0 {
+				w := out.Warn("worktree", out.CodeUntracked,
+					fmt.Sprintf("%d untracked file(s) are not in git, so not sent: %s", len(ch.Untracked), listPaths(ch.Untracked, 5)),
+					"git add and commit them if the build needs them; otherwise ignore them (add them to .gitignore)")
+				fmt.Fprintf(c.Stderr, "warning: %s\nFix: %s\n", w.Message, w.Fix)
+			}
 		}
 	}
 
@@ -84,11 +97,23 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 	if e := unusable(h); e != nil {
 		return nil, c.fail(o.JSON, e)
 	}
+	// With --json, ref and sha are in the report, so stderr only says why the
+	// command may take a while; in text, one line says what goes where.
+	extra := ""
 	switch h.State {
 	case host.Stopped:
-		fmt.Fprintf(c.Stderr, "waking %s…\n", h.DisplayName)
+		extra = " (waking it, ~20 s)"
+		if o.JSON {
+			fmt.Fprintf(c.Stderr, "waking %s…\n", h.DisplayName)
+		}
 	case host.Busy:
-		fmt.Fprintf(c.Stderr, "%s is %s; waiting for it…\n", h.DisplayName, h.RawState)
+		extra = fmt.Sprintf(" (it is %s; waiting for it)", h.RawState)
+		if o.JSON {
+			fmt.Fprintf(c.Stderr, "%s is %s; waiting for it…\n", h.DisplayName, h.RawState)
+		}
+	}
+	if !o.JSON {
+		fmt.Fprintln(c.Stderr, sendingLine(refName(fullRef, o.Ref), sha, h.DisplayName, subdir, extra))
 	}
 	p, e := c.probe(ctx, h)
 	if e != nil {
@@ -99,16 +124,22 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 	if err != nil {
 		return nil, c.fail(o.JSON, asError(err, out.CodeCacheError, "retry; if it persists, check that the system can provide random numbers"))
 	}
+	cmdStr := CommandString(o.Cmd)
+	if subdir != "" {
+		cmdStr = guardedCommand(subdir, sha, cmdStr)
+	}
 	req := runner.SubmitRequest{
 		ID: id, Key: job.BranchKey(fullRef), SHA: sha, Kind: kind,
-		Prio: o.Prio, Timeout: o.Timeout, Cmd: CommandString(o.Cmd),
+		Prio: o.Prio, Timeout: o.Timeout, Cmd: cmdStr,
 	}
 	req.Fingerprint = runner.Fingerprint(req)
 
 	// dispatch.json is written before any connection carrying the job opens.
+	// It keeps the command as typed, without the --cd guard, so that the
+	// commands it suggests (rerun) are the ones the user would type.
 	d := job.Dispatch{
 		ID: id, Repo: c.Repo, Host: h.DisplayName, HostNum: h.Num, HostID: p.HostID, HostName: h.Name, Ref: fullRef,
-		Key: req.Key, SHA: sha, Kind: req.Kind, Cmd: req.Cmd, Fingerprint: req.Fingerprint,
+		Key: req.Key, SHA: sha, Kind: req.Kind, Cmd: CommandString(o.Cmd), Dir: subdir, Fingerprint: req.Fingerprint,
 		SubmittedAt: c.Clock.Now().UTC().Format(time.RFC3339),
 	}
 	if kind == runner.KindGen {

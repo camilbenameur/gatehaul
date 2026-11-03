@@ -202,8 +202,83 @@ func TestDirtyTreeWarns(t *testing.T) {
 		t.Fatal("a dirty tree is a warning, not an error")
 	}
 	c := expect(t, r, "worktree", out.LevelWarning, out.CodeDirtyTree)
-	if !strings.Contains(c.Message, "2 uncommitted") || !strings.Contains(c.Message, "NOT tested") {
-		t.Errorf("message = %q", c.Message)
+	if c.Message != "1 modified file(s) are not committed, so NOT sent and NOT tested: main.go" || c.Fix != "commit them before gatehaul run, or stash them" {
+		t.Errorf("message = %q, fix = %q", c.Message, c.Fix)
+	}
+	u := expect(t, r, "untracked", out.LevelWarning, out.CodeUntracked)
+	if u.Message != "1 untracked file(s) are not in git, so not sent: scratch.txt" || !strings.Contains(u.Fix, ".gitignore") {
+		t.Errorf("message = %q, fix = %q", u.Message, u.Fix)
+	}
+}
+
+func TestOnlyModifiedFilesWarnAsDirty(t *testing.T) {
+	r := run(t, scenario(response{prefix: git("status"), res: ghx.Stdout("M  a.go\n M b.go\n")}), "")
+	expect(t, r, "worktree", out.LevelWarning, out.CodeDirtyTree)
+	for _, c := range r.Checks {
+		if c.Name == "untracked" {
+			t.Errorf("unexpected untracked check: %+v", c)
+		}
+	}
+}
+
+func TestOnlyUntrackedFilesAreASofterWarning(t *testing.T) {
+	r := run(t, scenario(response{prefix: git("status"), res: ghx.Stdout("?? grep.exe.stackdump\n")}), "")
+	if !r.OK {
+		t.Fatal("untracked files are a warning, not an error")
+	}
+	expect(t, r, "worktree", out.LevelOK, "")
+	c := expect(t, r, "untracked", out.LevelWarning, out.CodeUntracked)
+	if strings.Contains(c.Message, "NOT tested") || strings.Contains(c.Fix, "stash") || !strings.Contains(c.Message, "grep.exe.stackdump") {
+		t.Errorf("message = %q, fix = %q", c.Message, c.Fix)
+	}
+}
+
+func TestGateInASubdirectory(t *testing.T) {
+	f := scenario()
+	r := Run(context.Background(), Options{
+		Runner: f, Dir: dir, Getenv: func(string) string { return "" },
+		DirFS: func(string) fs.FS {
+			return fstest.MapFS{"README.md": {}, "src/back-end/src/go.mod": {Data: []byte("module x\n")}}
+		},
+	})
+	for _, c := range r.Checks {
+		if err := c.Validate(); err != nil {
+			t.Errorf("invalid check: %v", err)
+		}
+	}
+	if !r.OK {
+		t.Fatal("a gate in a subdirectory is a warning, not an error")
+	}
+	c := expect(t, r, "gate", out.LevelWarning, out.CodeGateSubdir)
+	if c.Fix != "gatehaul run --cd src/back-end/src -- go test ./..." {
+		t.Errorf("fix = %q", c.Fix)
+	}
+	for _, want := range []string{"go.mod in src/back-end/src", "gatehaul run -- <cmd> works without it"} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q lacks %q", c.Message, want)
+		}
+	}
+	if got := r.Resolved["gate"]; got.Source != "src/back-end/src/go.mod" {
+		t.Errorf("resolved gate = %+v", got)
+	}
+}
+
+func TestNoGateAnywhere(t *testing.T) {
+	r := Run(context.Background(), Options{
+		Runner: scenario(), Dir: dir, Getenv: func(string) string { return "" },
+		DirFS: func(string) fs.FS { return fstest.MapFS{"README.md": {}} },
+	})
+	for _, c := range r.Checks {
+		if err := c.Validate(); err != nil {
+			t.Errorf("invalid check: %v", err)
+		}
+	}
+	c := expect(t, r, "gate", out.LevelWarning, out.CodeNoGate)
+	if !strings.Contains(c.Message, "gatehaul run -- <cmd> works without it") || strings.Contains(c.Fix, "gatehaul gate --") {
+		t.Errorf("message = %q, fix = %q", c.Message, c.Fix)
+	}
+	if !strings.Contains(c.Fix, "gatehaul run --cd <dir> -- <your test command>") {
+		t.Errorf("fix = %q", c.Fix)
 	}
 }
 

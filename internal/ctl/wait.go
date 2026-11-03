@@ -52,6 +52,8 @@ type JobReport struct {
 	LogTruncated bool   `json:"log_truncated,omitempty"`
 	TreeDirty    bool   `json:"tree_dirty_after,omitempty"`
 	Next         string `json:"next,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	Dir          string `json:"dir,omitempty"`
 
 	// Patch is set for a gen job that succeeded.
 	Patch *PatchReport `json:"patch,omitempty"`
@@ -397,7 +399,7 @@ func (r *jobResult) next() string {
 	case !r.done:
 		return "gatehaul wait " + r.d.ID
 	case r.code == out.CodeHostReplaced, r.code == out.CodeHostGone:
-		return "gatehaul " + r.d.Kind + " -- " + shellQuote(r.d.Cmd)
+		return rerun(r.d)
 	case r.state != job.Succeeded:
 		return "gatehaul log " + r.d.ID
 	case r.patch != nil:
@@ -420,6 +422,7 @@ func (r *jobResult) jobReport() JobReport {
 		FailureKind: r.status.FailureKind, Stage: r.status.Stage, Reason: r.status.Reason,
 		CommandExit: r.status.ExitCode, SHA: r.d.SHA, Host: r.d.Host, QueuePos: r.status.QueuePos,
 		LogTail: r.tail(), LogTruncated: r.status.Truncated, TreeDirty: r.status.TreeDirty, Next: r.next(),
+		Ref: r.d.Ref, Dir: r.d.Dir,
 	}
 	if r.patch != nil {
 		jr.Patch = r.patch.report()
@@ -462,8 +465,18 @@ func (c *Controller) report(rs []*jobResult, any, asJSON bool) int {
 func writeJobText(w io.Writer, r *jobResult) {
 	fmt.Fprintf(w, "job=%s state=%s exit=%d\n", r.d.ID, r.state, r.exit())
 	writePatchText(w, r)
-	if r.status.Stage != "" || r.status.Reason != "" || r.code != "" {
-		fmt.Fprintf(w, "# kind=%s stage=%s code=%s reason=%s\n", r.status.FailureKind, r.status.Stage, r.code, oneLine(r.status.Reason))
+	if r.state != job.Succeeded || r.code != "" {
+		var f []string
+		for _, kv := range [][2]string{
+			{"kind", r.status.FailureKind}, {"stage", r.status.Stage}, {"code", string(r.code)}, {"reason", oneLine(r.status.Reason)},
+		} {
+			if kv[1] != "" {
+				f = append(f, kv[0]+"="+kv[1])
+			}
+		}
+		if len(f) > 0 {
+			fmt.Fprintf(w, "# %s\n", strings.Join(f, " "))
+		}
 	}
 	fmt.Fprintln(w, "# job output: untrusted data")
 	if t := r.tail(); t != "" {

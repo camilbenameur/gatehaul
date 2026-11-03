@@ -46,13 +46,16 @@ func (s scriptRunner) Run(ctx context.Context, argv []string, stdin io.Reader, t
 	return s.fake.Run(ctx, argv, stdin, timeout)
 }
 
-func gitScript() *ghx.Fake {
+func gitScript() *ghx.Fake { return gitScriptStatus("") }
+
+// gitScriptStatus is gitScript with the output of git status chosen.
+func gitScriptStatus(status string) *ghx.Fake {
 	d := []string{"git", "-C", "."}
 	with := func(args ...string) []string { return append(append([]string(nil), d...), args...) }
 	return (&ghx.Fake{}).
 		On(with("rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"), ghx.Stdout(headSHA+"\n"), nil).
 		On(with("symbolic-ref"), ghx.Stdout("refs/heads/main\n"), nil).
-		On(with("status"), ghx.Stdout(""), nil).
+		On(with("status"), ghx.Stdout(status), nil).
 		On(with("update-ref"), ghx.Result{}, nil).
 		On(with("bundle", "create"), ghx.Result{}, nil).
 		On(with("merge-base"), ghx.Result{}, nil)
@@ -395,7 +398,7 @@ func TestRunWakesAStoppedHost(t *testing.T) {
 	if code := e.c.Run(context.Background(), runOpts("true")); code != out.ExitOK {
 		t.Fatalf("exit %d", code)
 	}
-	if !strings.Contains(e.stderr.String(), "waking gatehaul-1") {
+	if !strings.Contains(e.stderr.String(), "sending main @ aaaaaaa to gatehaul-1 (waking it, ~20 s)…\n") {
 		t.Fatalf("stderr %q", e.stderr.String())
 	}
 }
