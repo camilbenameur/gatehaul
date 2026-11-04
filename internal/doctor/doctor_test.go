@@ -9,6 +9,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/camilbenameur/gatehaul/internal/detect"
 	"github.com/camilbenameur/gatehaul/internal/ghx"
 	"github.com/camilbenameur/gatehaul/internal/out"
 )
@@ -49,6 +50,13 @@ func scenario(overrides ...response) *ghx.Fake {
 
 func goProject(string) fs.FS { return fstest.MapFS{"go.mod": {Data: []byte("module x\n")}} }
 
+// onPath is a gatehaul binary that "gatehaul" on PATH resolves to.
+var onPath = detect.Invocation{
+	Executable: func() (string, error) { return "/opt/bin/gatehaul", nil },
+	LookPath:   func(string) (string, error) { return "/opt/bin/gatehaul", nil },
+	SameFile:   func(a, b string) bool { return a == b },
+}
+
 func run(t *testing.T, f *ghx.Fake, repo string) Report {
 	t.Helper()
 	r := Run(context.Background(), Options{
@@ -57,6 +65,7 @@ func run(t *testing.T, f *ghx.Fake, repo string) Report {
 		Repo:   repo,
 		Getenv: func(string) string { return "" },
 		DirFS:  goProject,
+		Self:   onPath,
 	})
 	for _, c := range r.Checks {
 		if err := c.Validate(); err != nil {
@@ -209,6 +218,54 @@ func TestNonGitHubOriginLeadsWithReadOnlyFixes(t *testing.T) {
 	}
 }
 
+func TestPathCheck(t *testing.T) {
+	notFound := func(string) (string, error) { return "", exec.ErrNotFound }
+	cases := []struct {
+		name   string
+		inv    detect.Invocation
+		env    string
+		level  out.Level
+		code   out.Code
+		prefix string
+		msg    string
+	}{
+		{"on PATH", onPath, "", out.LevelOK, "", "gatehaul", "gatehaul on PATH is this binary"},
+		{"not on PATH", detect.Invocation{
+			Executable: func() (string, error) { return "/home/me/.local/bin/gatehaul", nil }, LookPath: notFound,
+		}, "", out.LevelWarning, out.CodeNotOnPath, "/home/me/.local/bin/gatehaul", "gatehaul is not on PATH"},
+		{"another gatehaul on PATH", detect.Invocation{
+			Executable: func() (string, error) { return "/home/me/.local/bin/gatehaul", nil },
+			LookPath:   func(string) (string, error) { return "/usr/bin/gatehaul", nil },
+			SameFile:   func(a, b string) bool { return a == b },
+		}, "", out.LevelWarning, out.CodeNotOnPath, "/home/me/.local/bin/gatehaul", "the gatehaul on PATH (/usr/bin/gatehaul) is not this binary"},
+		{"override", detect.Invocation{LookPath: notFound}, "bash tools/gh.sh", out.LevelOK, "", "bash tools/gh.sh", "$GATEHAUL_NEXT"},
+		{"binary not found", detect.Invocation{
+			Executable: func() (string, error) { return "", exec.ErrNotFound }, LookPath: notFound,
+		}, "", out.LevelWarning, out.CodeNotOnPath, "gatehaul", "cannot locate"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]string{detect.NextEnv: c.env}
+			r := Run(context.Background(), Options{
+				Runner: scenario(), Dir: dir, Getenv: func(k string) string { return env[k] }, DirFS: goProject, Self: c.inv,
+			})
+			ch := expect(t, r, "path", c.level, c.code)
+			if err := ch.Validate(); err != nil {
+				t.Error(err)
+			}
+			if !strings.Contains(ch.Message, c.msg) {
+				t.Errorf("message = %q, want %q", ch.Message, c.msg)
+			}
+			if got := r.Resolved["self"].Value; got != c.prefix {
+				t.Errorf("resolved self = %q, want %q", got, c.prefix)
+			}
+			if !r.OK {
+				t.Errorf("the path check never blocks: %+v", r.Checks)
+			}
+		})
+	}
+}
+
 func TestNoRemoteAtAll(t *testing.T) {
 	r := run(t, scenario(response{prefix: git("remote"), res: ghx.Stdout("")}), "")
 	c := expect(t, r, "repo", out.LevelError, out.CodeNoGitHubRemote)
@@ -257,7 +314,7 @@ func TestOnlyUntrackedFilesAreASofterWarning(t *testing.T) {
 func TestGateInASubdirectory(t *testing.T) {
 	f := scenario()
 	r := Run(context.Background(), Options{
-		Runner: f, Dir: dir, Getenv: func(string) string { return "" },
+		Runner: f, Dir: dir, Getenv: func(string) string { return "" }, Self: onPath,
 		DirFS: func(string) fs.FS {
 			return fstest.MapFS{"README.md": {}, "src/back-end/src/go.mod": {Data: []byte("module x\n")}}
 		},
@@ -286,7 +343,7 @@ func TestGateInASubdirectory(t *testing.T) {
 
 func TestNoGateAnywhere(t *testing.T) {
 	r := Run(context.Background(), Options{
-		Runner: scenario(), Dir: dir, Getenv: func(string) string { return "" },
+		Runner: scenario(), Dir: dir, Getenv: func(string) string { return "" }, Self: onPath,
 		DirFS: func(string) fs.FS { return fstest.MapFS{"README.md": {}} },
 	})
 	for _, c := range r.Checks {

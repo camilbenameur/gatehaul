@@ -45,6 +45,9 @@ const (
 	CodeGateSubdir     Code = "gate_in_subdirectory"
 	CodeNoHosts        Code = "no_hosts"
 	CodeSkipped        Code = "skipped"
+	// The gatehaul on PATH is missing or is another binary: next: lines name
+	// the running one by its full path.
+	CodeNotOnPath Code = "not_on_path"
 
 	// The submit answer was lost (the job may exist), and the host-related codes.
 	CodeOutcomeUnknown     Code = "outcome_unknown"
