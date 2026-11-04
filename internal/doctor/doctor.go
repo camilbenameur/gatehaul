@@ -141,10 +141,11 @@ func Run(ctx context.Context, o Options) Report {
 		add(notRepo(o.Dir, topErr))
 	default:
 		v, err := g.Repo(ctx, h)
+		var nr *detect.NoGitHubRemoteError
 		switch {
-		case errors.Is(err, detect.ErrNoGitHubRemote):
-			add(out.Fail("repo", out.CodeNoGitHubRemote, "no git remote points to "+h,
-				"add one (git remote add origin https://"+h+"/OWNER/REPO.git) or pass --repo owner/repo"))
+		case errors.As(err, &nr):
+			msg, fix := nr.Explain()
+			add(out.Fail("repo", out.CodeNoGitHubRemote, msg, fix))
 		case err != nil:
 			add(out.Fail("repo", out.CodeNotGitRepo, "cannot read the git remotes: "+err.Error(), "run git remote -v by hand to see the error"))
 		default:
