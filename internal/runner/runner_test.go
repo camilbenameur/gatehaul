@@ -107,6 +107,8 @@ func TestScriptSharesTheContractsLimitsAndPatterns(t *testing.T) {
 		"MAX_PATCH_BYTES=" + strconv.Itoa(runner.MaxPatchBytes),
 		"MAX_BUNDLE_BYTES=" + strconv.FormatInt(int64(runner.MaxBundleBytes), 10),
 		fmt.Sprintf("MAX_WAIT_S=%d", int(runner.MaxWaitSlice/time.Second)),
+		"MAX_PROBE_JOBS=" + strconv.Itoa(runner.MaxProbeJobs),
+		"PROBE_CMD_BYTES=" + strconv.Itoa(runner.ProbeCmdBytes),
 		"'" + runner.IDPattern.String() + "'",
 		"'" + runner.KeyPattern.String() + "'",
 		"'" + runner.SHAPattern.String() + "'",

@@ -38,7 +38,7 @@ The v0.1 backend is GitHub Codespaces, driven by `gh`. The `Transport` and `Life
 | `gatehaul apply [<id>] [--allow-sensitive]` | Replays the patch application of a finished `gen`; never applies twice | 0 · 3 · 5 · 6 | done |
 | `gatehaul wait [<id>...] [--any\|--all] [--block 5m]` | Idempotent, never cancels. Returns `completed_ids` and `pending_ids`. Without an id, targets the one unfinished job of `HEAD`; a unique prefix of the ULID is enough. Applies the patch of a `gen` that has just finished. | as `run` | done |
 | `gatehaul log [<id>] [--grep RE] [--since BYTES] [--tail N]` | Full or filtered log, with a byte cursor returned on every call and a cap per response (100 KiB) to protect the agent's context | 0 | done |
-| `gatehaul status [<id>]` · `gatehaul queue` | State of one job, or the queues of each host with the estimated wait | 0 | planned |
+| `gatehaul status [<id>]` · `gatehaul queue` | **Read-only**, never waits, and **never starts a stopped host** (waking a codespace costs quota, and a stopped one runs nothing). Without an id (`queue` is the same): one line per host with its state; a stopped or starting host is reported `stopped (jobs not checked)` (or its state) without any connection; a running host is probed once (§5.1) and lists its running job and its queue in order, each with id, state, queue position, age, ref and the first characters of its command (untrusted data). With an id: the job's state, from the local cache when it has ended, else from one `wait` call with a slice of 0 and no log tail when its host is running, else the last state seen from here, marked as not checked. A `next:` line when something is left to do: `wait` on the unfinished jobs dispatched from this machine, `log` for a failed job, `apply` for a `gen` whose patch is not applied, the command again when its host is gone. An unknown id is an error (`no_such_job`). | 0 · 5 | done |
 | `gatehaul cancel [<id>]` | TERM to the session group, KILL after 10 s, then a sweep of the processes marked `GATEHAUL_JOB` (the runner already supports this) | 0 | planned |
 | `gatehaul gate [<ref>] [--profile light\|full] [--accept-drop]` | Runs the gate. **The verdict is computed on the laptop.** | 0 · 1 · 3 · **4 false green** · 5 | planned |
 | `gatehaul hook claude-stop` | Claude Code `Stop` hook: exits 2 if the last green gate is not on `HEAD` | 0 · 2 | planned |
@@ -98,7 +98,7 @@ Each one is **a single SSH round trip**, which costs about 5 s with `gh codespac
 
 | Subcommand | Role |
 |---|---|
-| `probe` | Returns the runner version, `host_id`, `boot_id`, the queue depth, the running job and its age, the `refs/gatehaul/*`, the tools present, the free disk space and whether a token variable is present. **Also starts reconciliation** (§5.3). |
+| `probe` | Returns the runner version, `host_id`, `boot_id`, the queue depth, the running job and its age, the unfinished jobs (`jobs`: the running one, then at most 50 queued ones in queue order, each with its id, state, queue position, age, priority, branch key, kind and the first 512 bytes of its command in base64), the `refs/gatehaul/*`, the tools present, the free disk space and whether a token variable is present. **Also starts reconciliation** (§5.3). |
 | `submit` | Receives the header and the bundle. Idempotent (§3). Verifies the bundle (`git bundle verify`, `list-heads` contains the expected SHA, `transfer.fsckObjects`, size capped at 2 GiB), fetches it, writes the ticket, detaches the job with `setsid` and returns the id. If a prerequisite of the incremental bundle is missing, it answers `need_full` and the controller sends a full bundle under the same id. |
 | `wait` | Waits at most 60 s for one or more jobs to finish, then returns their state and the end of their log. Imposed order: read `exit.json`, drain the log to the end, then answer. The controller chains independent slices; no orphan wait is left on the host. |
 | `log` | Full log, filtered (`grep -E`) or from a byte cursor, cut at the last line end, with `cursor` and `truncated` |
@@ -146,7 +146,7 @@ internal/bundle/            incremental base, git bundle create
 internal/job/               ids, states, local job cache
 internal/lock/              portable file lock (gofrs/flock)
 internal/patch/             sanitising (§7) and patch application
-internal/ctl/               run, gen, apply, wait, log, up, down
+internal/ctl/               run, gen, apply, wait, log, status, up, down
 ```
 
 **External dependencies:** `gofrs/flock` (portable file lock, Windows included) and `golang.org/x/sys` (detecting a real terminal). No SSH in Go, no GitHub API client: `gh` does everything, and it is the one that holds the token. `gatehaul` never reads, stores or prints a token.

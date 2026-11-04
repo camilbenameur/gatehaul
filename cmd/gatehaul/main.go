@@ -2,8 +2,8 @@
 // sandboxes and refuses green verdicts without proof that the tests ran.
 //
 // This release implements "doctor", "version", "up", "down", "run", "gen",
-// "apply", "wait" and "log"; the other commands are on the roadmap in
-// docs/SPEC.md.
+// "apply", "wait", "log", "status" and "queue"; the other commands are on the
+// roadmap in docs/SPEC.md.
 package main
 
 import (
@@ -35,7 +35,7 @@ func main() {
 
 // planned lists the commands of v0.1 that are not implemented yet.
 var planned = map[string]bool{
-	"status": true, "queue": true, "cancel": true, "gate": true, "hook": true,
+	"cancel": true, "gate": true, "hook": true,
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -56,6 +56,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cmdWait(ctx, args[1:], stdout, stderr)
 	case cmd == "log":
 		return cmdLog(ctx, args[1:], stdout, stderr)
+	case cmd == "status" || cmd == "queue":
+		return cmdStatus(ctx, cmd, args[1:], stdout, stderr)
 	case cmd == "up":
 		return cmdUp(ctx, args[1:], stdout, stderr)
 	case cmd == "down":
@@ -105,9 +107,14 @@ Usage:
   gatehaul wait [<id>...] [--any|--all] [--block D] [--json]
                      wait for jobs; never cancels them (a finished gen job is applied)
   gatehaul log [<id>] [--grep RE] [--since N] [--tail N] [--json]
+  gatehaul status [<id>] [--json]
+                     read-only: the state of one job, or of every host and its queue;
+                     never starts a stopped host and never waits
+  gatehaul queue [--json]
+                     the same as status without an id
   gatehaul version [--json]
 
-Planned for v0.1: status, queue, cancel, gate, hook.
+Planned for v0.1: cancel, gate, hook.
 
 Exit codes: 0 ok, 1 failed, 2 usage, 3 still running, 4 false green, 5 environment, 6 patch refused.
 `)

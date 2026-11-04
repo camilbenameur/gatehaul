@@ -107,6 +107,7 @@ gatehaul run -- go test ./...    # sends HEAD, runs it, returns a job id after 5
 gatehaul run --cd src/api -- go test ./...   # same, in a subdirectory of the repository (relative to its root)
 gatehaul wait                    # waits for the pending job of HEAD; never cancels it
 gatehaul log --tail 50           # the end of its log
+gatehaul status                  # what runs and what waits on each host (never wakes one)
 gatehaul gen -- gofmt -w .       # runs, then applies the patch of the files it changed
 gatehaul down                    # stops the codespaces that run nothing
 ```
@@ -122,7 +123,8 @@ gatehaul down                    # stops the codespaces that run nothing
 | ✅ | Process control: TERM, then KILL, then a sweep of everything the job started, even what escaped its session | done |
 | ✅ | `gen` and `apply`: patches checked on a tree diff (symlinks, `.git`, `..`, Windows 8.3 names, case collisions, LFS, size bombs), sensitive paths refused or listed, transactional apply | done |
 | 🔜 | Gates with proof of execution: zero tests fails, the test count only goes down with human approval, a false green exits 4 | next |
-| 🔜 | Several codespaces behind one queue: `queue`, `status`, `cancel`, `wait --any`, priorities | next |
+| ✅ | Read-only `status` and `queue`: each host's running job and queue, or one job's state, without waking a stopped codespace | done |
+| 🔜 | Several codespaces behind one queue: `cancel`, `wait --any`, priorities | next |
 | 🔜 | A Claude Code `Stop` hook that refuses to end a turn without a green gate on `HEAD` | next |
 | ✅ | Claude Code plugin and skill, with a checksum-verified installer | done |
 | ✅ | Pre-release binaries for Linux, macOS and Windows, with `SHA256SUMS` | done |

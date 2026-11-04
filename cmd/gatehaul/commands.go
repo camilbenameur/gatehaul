@@ -202,6 +202,32 @@ func cmdLog(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return ctrl.Log(ctx, ctl.LogOptions{ID: id, Grep: *grep, Since: *since, Tail: *tail, JSON: *c.json})
 }
 
+// cmdStatus runs "status [<id>]" and "queue", which takes no id.
+func cmdStatus(ctx context.Context, name string, args []string, stdout, stderr io.Writer) int {
+	fs, c := newFlags(name, stderr)
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return flagExit(err)
+	}
+	synopsis := "gatehaul status [<id>] [--json]"
+	max := 1
+	if name == "queue" {
+		synopsis, max = "gatehaul queue [--json]", 0
+	}
+	if len(pos) > max {
+		return usageFail(stderr, *c.json, "unexpected argument "+pos[max], synopsis)
+	}
+	id := ""
+	if len(pos) == 1 {
+		id = pos[0]
+	}
+	ctrl, code := newController(ctx, c, stdout, stderr)
+	if ctrl == nil {
+		return code
+	}
+	return ctrl.Status(ctx, ctl.StatusOptions{ID: id, JSON: *c.json})
+}
+
 func cmdUp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs, c := newFlags("up", stderr)
 	n := fs.Int("n", 1, "how many gatehaul-<i> codespaces should exist")
