@@ -1,7 +1,7 @@
 {
   "name": "gatehaul",
   "displayName": "gatehaul",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "Run builds, tests and code generators in your own GitHub Codespaces, as asynchronous jobs that survive the session, with patches checked before they touch your working tree.",
   "author": {
     "name": "Camil Benameur",
