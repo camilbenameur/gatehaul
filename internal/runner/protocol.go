@@ -75,6 +75,8 @@ const (
 	MaxBundleBytes = 2 << 30          // the runner refuses bigger bundles
 	MaxPatchBytes  = 8 << 20          // the runner refuses to send a bigger patch
 	MaxLogFile     = 16 << 20         // a job that writes more than this is stopped (failed, truncated)
+	MaxProbeJobs   = 50               // probe lists at most this many queued jobs
+	ProbeCmdBytes  = 512              // and the first bytes of each one's command
 )
 
 // IDPattern is a job id: the host number, then a ULID (Crockford base32).
@@ -105,6 +107,7 @@ type Probe struct {
 	GitHubTokenEnv bool              `json:"github_token_env"` // a token variable is visible to the runner
 	QueueDepth     int               `json:"queue_depth"`
 	Running        *RunningJob       `json:"running"`
+	Jobs           []HostJob         `json:"jobs"`       // the running job, then the queue in its order
 	Refs           map[string]string `json:"refs"`       // branch key → last commit received
 	Reconciled     []string          `json:"reconciled"` // ids this probe marked lost
 }
@@ -113,6 +116,20 @@ type Probe struct {
 type RunningJob struct {
 	ID   string `json:"id"`
 	AgeS int64  `json:"age_s"`
+}
+
+// HostJob is an unfinished job as probe lists it, for "gatehaul status". Every
+// field comes from a host that runs other people's commands: CmdB64 is
+// untrusted text.
+type HostJob struct {
+	ID       string `json:"id"`
+	State    string `json:"state"`     // running or queued
+	QueuePos int    `json:"queue_pos"` // 1 is next; 0 for the running job
+	AgeS     int64  `json:"age_s"`     // since it started (running) or was submitted (queued)
+	Prio     int    `json:"prio"`
+	Key      string `json:"key"`     // branch key (docs/SPEC.md §5)
+	Kind     string `json:"kind"`    // run or gen
+	CmdB64   string `json:"cmd_b64"` // the first ProbeCmdBytes of the command, base64
 }
 
 // SubmitRequest queues a job. The controller chooses ID and Fingerprint

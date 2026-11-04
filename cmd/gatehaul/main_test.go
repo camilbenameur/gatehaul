@@ -40,7 +40,7 @@ func TestNoArgumentsIsUsage(t *testing.T) {
 }
 
 func TestUnknownAndPlannedCommandsGiveAFix(t *testing.T) {
-	for _, cmd := range []string{"frobnicate", "gate", "status"} {
+	for _, cmd := range []string{"frobnicate", "gate", "cancel"} {
 		code, _, stderr := call(cmd)
 		if code != out.ExitUsage || !strings.Contains(stderr, "Fix: ") {
 			t.Errorf("%s: code %d, stderr %q", cmd, code, stderr)
@@ -63,6 +63,8 @@ func TestControllerCommandsRejectBadInvocations(t *testing.T) {
 		{"up", "stray"},
 		{"down", "stray"},
 		{"log", "a", "b"},
+		{"status", "a", "b"},
+		{"queue", "a"},
 	}
 	for _, args := range cases {
 		code, _, stderr := call(args...)
@@ -77,7 +79,7 @@ func TestControllerCommandsRejectBadInvocations(t *testing.T) {
 
 func TestHelpListsTheControllerCommands(t *testing.T) {
 	_, stdout, _ := call("help")
-	for _, want := range []string{"gatehaul run", "gatehaul gen", "gatehaul apply", "gatehaul wait", "gatehaul log", "gatehaul up", "gatehaul down"} {
+	for _, want := range []string{"gatehaul run", "gatehaul gen", "gatehaul apply", "gatehaul wait", "gatehaul log", "gatehaul status", "gatehaul queue", "gatehaul up", "gatehaul down"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("help lacks %q", want)
 		}

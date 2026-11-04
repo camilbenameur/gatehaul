@@ -86,7 +86,7 @@ func TestSkillFrontmatter(t *testing.T) {
 // that the CLI does not have yet.
 func TestSkillUsesOnlyImplementedCommands(t *testing.T) {
 	text := string(readRepoFile(t, "skills/gatehaul/SKILL.md"))
-	implemented := map[string]bool{"doctor": true, "version": true, "help": true, "up": true, "down": true, "run": true, "gen": true, "apply": true, "wait": true, "log": true}
+	implemented := map[string]bool{"doctor": true, "version": true, "help": true, "up": true, "down": true, "run": true, "gen": true, "apply": true, "wait": true, "log": true, "status": true, "queue": true}
 	for _, m := range regexp.MustCompile("`gatehaul ([a-z]+)").FindAllStringSubmatch(text, -1) {
 		if planned[m[1]] || !implemented[m[1]] {
 			t.Errorf("SKILL.md uses gatehaul %s, which is not implemented", m[1])
