@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -34,6 +35,9 @@ type Options struct {
 	Repo   string                 // --repo owner/repo, overrides the git remote
 	Getenv func(string) string    // defaults to os.Getenv
 	DirFS  func(dir string) fs.FS // defaults to os.DirFS
+	// Self locates the running binary for the "path" check; its zero fields
+	// use the real process (Getenv defaults to the Getenv above).
+	Self detect.Invocation
 }
 
 var repoRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -54,6 +58,14 @@ func Run(ctx context.Context, o Options) Report {
 	}
 	r := Report{Resolved: map[string]detect.Value{}}
 	add := func(c out.Check) { r.Checks = append(r.Checks, c) }
+
+	// How the commands gatehaul prints (next: lines) will name it.
+	if o.Self.Getenv == nil {
+		o.Self.Getenv = o.Getenv
+	}
+	self := detect.DetectSelf(o.Self)
+	r.Resolved["self"] = detect.Value{Value: self.Prefix, Source: self.Source, Fallback: detect.NextEnv}
+	add(selfCheck(self))
 
 	host := detect.GHHost(o.Getenv)
 	r.Resolved["gh_host"] = host
@@ -266,6 +278,30 @@ func subdirFix(g detect.Gate, dir string) string {
 		return "gatehaul run --cd " + dir + " -- pytest"
 	}
 	return "gatehaul run --cd " + dir + " -- <your test command> (a gatehaul.toml is only read at the repository root)"
+}
+
+// selfCheck says how next: lines name gatehaul, and warns when that is not
+// the bare "gatehaul" because PATH lacks it or holds another binary.
+func selfCheck(s detect.Self) out.Check {
+	switch s.Source {
+	case detect.SelfFromEnv:
+		return out.OK("path", "next: lines start with $"+detect.NextEnv+": "+s.Prefix)
+	case detect.SelfFromPath:
+		return out.OK("path", "gatehaul on PATH is this binary")
+	case detect.SelfFromExecutable:
+		dir := filepath.Dir(s.Exe)
+		if s.OnPath == "" {
+			return out.Warn("path", out.CodeNotOnPath,
+				"gatehaul is not on PATH, so next: lines name this binary by its full path: "+s.Prefix,
+				"keep calling gatehaul by its full path ("+s.Prefix+"), or add "+filepath.ToSlash(dir)+" to PATH")
+		}
+		return out.Warn("path", out.CodeNotOnPath,
+			"the gatehaul on PATH ("+filepath.ToSlash(s.OnPath)+") is not this binary, so next: lines name this one by its full path: "+s.Prefix,
+			"call this binary by its full path ("+s.Prefix+"), or put "+filepath.ToSlash(dir)+" before the other one on PATH")
+	}
+	return out.Warn("path", out.CodeNotOnPath,
+		"cannot locate the running gatehaul binary, so next: lines say gatehaul, which may not run",
+		"call gatehaul the way you called it for this command, or set "+detect.NextEnv+" to that command")
 }
 
 func authFailure(err error, host string) out.Check {
