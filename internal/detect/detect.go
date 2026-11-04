@@ -77,11 +77,73 @@ func (g Git) TopLevel(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(res.Stdout)), nil
 }
 
-// ErrNoGitHubRemote means no remote points to the GitHub host.
+// ErrNoGitHubRemote means no remote points to the GitHub host. Repo returns it
+// wrapped in a *NoGitHubRemoteError, which says what it found instead.
 var ErrNoGitHubRemote = errors.New("no remote points to GitHub")
 
+// Remote is a git remote that Repo looked at: its name, and the host of its
+// URL ("" for a local path or a URL gatehaul cannot read). The URL itself is
+// never kept: it may carry credentials.
+type Remote struct {
+	Name string
+	Host string
+}
+
+// NoGitHubRemoteError is ErrNoGitHubRemote with what the checkout has instead:
+// its remotes that do not point to GHHost, and the GitHub repositories of the
+// remotes that do when there are several and none is origin or upstream.
+type NoGitHubRemoteError struct {
+	GHHost    string
+	Others    []Remote
+	Ambiguous []Value
+}
+
+func (e *NoGitHubRemoteError) Error() string {
+	msg, _ := e.Explain()
+	return msg
+}
+
+// Is makes errors.Is(err, ErrNoGitHubRemote) true.
+func (e *NoGitHubRemoteError) Is(target error) bool { return target == ErrNoGitHubRemote }
+
+// Explain returns the message and the Fix line of the error. The first fixes
+// are read-only: the usual cause is gatehaul started from the wrong directory,
+// and adding a GitHub remote to an unrelated repository is the wrong fix
+// (docs/SPEC.md §2). "git remote add" is only mentioned for a checkout with no
+// remote at all, as a step for the user.
+func (e *NoGitHubRemoteError) Explain() (message, fix string) {
+	const readOnly = "run gatehaul from the checkout of the GitHub repository (cd into it, or -C <dir>), or pass --repo owner/repo"
+	if len(e.Ambiguous) > 1 {
+		var parts, repos []string
+		for _, v := range e.Ambiguous {
+			parts = append(parts, strings.TrimPrefix(v.Source, "git remote ")+" is "+v.Value)
+			repos = append(repos, v.Value)
+		}
+		return fmt.Sprintf("several git remotes point to %s and none is origin or upstream (%s)", e.GHHost, strings.Join(parts, ", ")),
+			"pass --repo with the repository you mean: --repo " + strings.Join(repos, " or --repo ")
+	}
+	if len(e.Others) == 0 {
+		return "this checkout has no git remote, so its GitHub repository is unknown",
+			readOnly + "; if this checkout really is that repository and only lacks a remote, adding one is for the user to do (git remote add origin https://" + e.GHHost + "/OWNER/REPO.git)"
+	}
+	var parts []string
+	for i, r := range e.Others {
+		if i == 3 {
+			parts = append(parts, fmt.Sprintf("and %d more", len(e.Others)-3))
+			break
+		}
+		where := "a local path"
+		if r.Host != "" {
+			where = r.Host
+		}
+		parts = append(parts, r.Name+" is "+where)
+	}
+	return fmt.Sprintf("no git remote points to %s (%s)", e.GHHost, strings.Join(parts, ", ")), readOnly
+}
+
 // Repo returns "owner/repo" from the remotes: origin, then upstream, then the
-// only remote on host.
+// only remote on host. When there is none, the error is a
+// *NoGitHubRemoteError.
 func (g Git) Repo(ctx context.Context, host string) (Value, error) {
 	res, err := g.run(ctx, "remote")
 	if err != nil {
@@ -94,16 +156,20 @@ func (g Git) Repo(ctx context.Context, host string) (Value, error) {
 	ordered := orderRemotes(remotes)
 
 	var found []Value
+	var others []Remote
 	for _, name := range ordered {
 		res, err := g.run(ctx, "remote", "get-url", name)
 		if err != nil {
 			return Value{}, err
 		}
 		if !res.OK() {
+			others = append(others, Remote{Name: name})
 			continue
 		}
-		owner, repo, ok := ParseRemoteURL(strings.TrimSpace(string(res.Stdout)), host)
+		raw := strings.TrimSpace(string(res.Stdout))
+		owner, repo, ok := ParseRemoteURL(raw, host)
 		if !ok {
+			others = append(others, Remote{Name: name, Host: RemoteHost(raw)})
 			continue
 		}
 		v := Value{Value: owner + "/" + repo, Source: "git remote " + name, Fallback: "--repo owner/repo"}
@@ -115,7 +181,38 @@ func (g Git) Repo(ctx context.Context, host string) (Value, error) {
 	if len(found) == 1 {
 		return found[0], nil
 	}
-	return Value{}, ErrNoGitHubRemote
+	return Value{}, &NoGitHubRemoteError{GHHost: host, Others: others, Ambiguous: found}
+}
+
+// RemoteHost returns the host of a git remote URL, without user or port, or ""
+// for a local path (including a Windows drive letter) or a URL it cannot read.
+func RemoteHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	var h string
+	switch {
+	case strings.Contains(raw, "://"):
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme == "file" {
+			return ""
+		}
+		h = u.Hostname()
+	case strings.Contains(raw, ":"):
+		h = raw[:strings.Index(raw, ":")]
+		if at := strings.LastIndex(h, "@"); at >= 0 {
+			h = h[at+1:]
+		}
+		if len(h) < 2 || strings.ContainsAny(h, `/\`) {
+			return "" // C:\src\x, or ./a:b, are paths
+		}
+	default:
+		return ""
+	}
+	for _, r := range h {
+		if r <= ' ' || r == 0x7f {
+			return ""
+		}
+	}
+	return h
 }
 
 // orderRemotes puts origin first and upstream second, keeping the others.
