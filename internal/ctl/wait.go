@@ -420,7 +420,7 @@ func (r *jobResult) tail() string {
 func (r *jobResult) jobReport(self string) JobReport {
 	jr := JobReport{
 		ID: r.d.ID, State: string(r.state), Exit: r.exit(), Code: string(r.code),
-		FailureKind: r.status.FailureKind, Stage: r.status.Stage, Reason: r.status.Reason,
+		FailureKind: r.status.FailureKind, Stage: r.status.Stage, Reason: r.reason(),
 		CommandExit: r.status.ExitCode, SHA: r.d.SHA, Host: r.d.Host, QueuePos: r.status.QueuePos,
 		LogTail: r.tail(), LogTruncated: r.status.Truncated, TreeDirty: r.status.TreeDirty, Next: r.next(self),
 		Ref: r.d.Ref, Dir: r.d.Dir,
@@ -469,7 +469,7 @@ func writeJobText(w io.Writer, r *jobResult, self string) {
 	if r.state != job.Succeeded || r.code != "" {
 		var f []string
 		for _, kv := range [][2]string{
-			{"kind", r.status.FailureKind}, {"stage", r.status.Stage}, {"code", string(r.code)}, {"reason", oneLine(r.status.Reason)},
+			{"kind", r.status.FailureKind}, {"stage", r.status.Stage}, {"code", string(r.code)}, {"reason", oneLine(r.reason())},
 		} {
 			if kv[1] != "" {
 				f = append(f, kv[0]+"="+kv[1])
