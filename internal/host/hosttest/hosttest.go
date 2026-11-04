@@ -69,6 +69,7 @@ func Run(t *testing.T, newBackend func(t *testing.T) host.Backend) {
 		{"timeout", scenarioTimeout},
 		{"cancel_running", scenarioCancelRunning},
 		{"cancel_queued", scenarioCancelQueued},
+		{"probe_lists_unfinished_jobs", scenarioProbeJobs},
 		{"lost_job", scenarioLost},
 		{"log_filters", scenarioLog},
 		{"request_validation", scenarioValidation},
@@ -513,7 +514,7 @@ func scenarioProbe(t *testing.T, b host.Backend) {
 			t.Errorf("tool %s is reported missing", tool)
 		}
 	}
-	if p1.Running != nil || p1.QueueDepth != 0 || len(p1.Reconciled) != 0 {
+	if p1.Running != nil || p1.QueueDepth != 0 || len(p1.Reconciled) != 0 || len(p1.Jobs) != 0 {
 		t.Errorf("a fresh host runs nothing: %+v", p1)
 	}
 	installed := filepath.Join(b.Root(r.h), "runner-"+runner.Version()+".sh")
@@ -805,6 +806,52 @@ func scenarioCancelQueued(t *testing.T, b host.Backend) {
 		t.Fatalf("cancel: %v", err)
 	}
 	wantState(t, st, "cancelled")
+	r.noProcs(first.ID)
+}
+
+// scenarioProbeJobs: probe lists the running job, then the queue in its order,
+// with what "gatehaul status" shows of each.
+func scenarioProbeJobs(t *testing.T, b host.Backend) {
+	r := newRig(t, b)
+	first, queued := queuedBehindARunningJob(r, "echo queued")
+	p, err := r.c.Probe(t.Context())
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if p.Running == nil || p.Running.ID != first.ID || p.QueueDepth != 1 {
+		t.Fatalf("running %+v, queue depth %d", p.Running, p.QueueDepth)
+	}
+	if len(p.Jobs) != 2 {
+		t.Fatalf("jobs = %+v, want the running one and the queued one", p.Jobs)
+	}
+	run, q := p.Jobs[0], p.Jobs[1]
+	if run.ID != first.ID || run.State != "running" || run.QueuePos != 0 || run.Key != jobKey || run.Kind != runner.KindRun || run.Prio != first.Prio {
+		t.Errorf("running entry %+v", run)
+	}
+	if q.ID != queued.ID || q.State != "queued" || q.QueuePos != 1 || q.Key != jobKey || q.Kind != runner.KindRun {
+		t.Errorf("queued entry %+v", q)
+	}
+	if got := decode(t, run.CmdB64); got != "sleep 30" {
+		t.Errorf("running command %q", got)
+	}
+	if got := decode(t, q.CmdB64); got != "echo queued" {
+		t.Errorf("queued command %q", got)
+	}
+	if run.AgeS < 0 || q.AgeS < 0 {
+		t.Errorf("ages %d and %d", run.AgeS, q.AgeS)
+	}
+
+	if _, err := r.c.Cancel(t.Context(), first.ID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	wantState(t, r.waitDone(queued.ID), "succeeded")
+	p, err = r.c.Probe(t.Context())
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if len(p.Jobs) != 0 || p.Running != nil {
+		t.Errorf("finished jobs are not listed: %+v", p.Jobs)
+	}
 	r.noProcs(first.ID)
 }
 

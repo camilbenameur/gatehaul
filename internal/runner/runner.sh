@@ -37,6 +37,8 @@ MAX_LOG_CHUNK=102400
 MAX_WAIT_S=60
 TURN_TIMEOUT_S=3600
 GRACE_S=60
+MAX_PROBE_JOBS=50
+PROBE_CMD_BYTES=512
 
 RE_ID='^[1-9][0-9]{0,3}-[0-9A-HJKMNP-TV-Z]{26}$'
 RE_KEY='^[a-z0-9-]{1,32}-[0-9a-f]{6}$'
@@ -599,9 +601,32 @@ git_prune_worktrees() {
 
 # ------------------------------------------------------------------ probe
 
+# probe_job ID STATE QUEUE_POS AGE_S: one entry of the probe's "jobs" list,
+# which "gatehaul status" shows. Every value is checked or base64, so that the
+# JSON stays valid whatever the job directory holds.
+probe_job() {
+  local jd=$JOBS/$1 key kind prio cmdh=''
+  key=$(jget "$jd/meta.json" key)
+  [[ $key =~ $RE_KEY ]] || key=
+  kind=$(jget "$jd/meta.json" kind)
+  case $kind in
+    run | gen) ;;
+    *) kind= ;;
+  esac
+  prio=$(jget "$jd/meta.json" prio)
+  [[ $prio =~ ^[0-9]$ ]] || prio=5
+  if [ -r "$jd/cmd.sh" ]; then
+    cmdh=$(head -c "$PROBE_CMD_BYTES" -- "$jd/cmd.sh" | base64 -w0) || cmdh=
+  fi
+  [[ $cmdh =~ $RE_B64 ]] || cmdh=
+  printf '{"id":"%s","state":"%s","queue_pos":%s,"age_s":%s,"prio":%s,"key":"%s","kind":"%s","cmd_b64":"%s"}' \
+    "$1" "$2" "$3" "$4" "$prio" "$key" "$kind" "$cmdh"
+}
+
 cmd_probe() {
   local version git_v='' tools='' sep='' t disk=0 line tok=false depth=0 running=null
   local refs='' rsep='' name sha d id age ep rec='' csep='' out
+  local jobs='' queued='' qsep='' listed=0
   init_root
   RECONCILED=()
   reconcile_all
@@ -640,6 +665,16 @@ cmd_probe() {
     id=${id#*-}
     if [ ! -e "$JOBS/$id/started" ] && job_alive "$id"; then
       depth=$((depth + 1))
+      # The tickets sort by priority then sequence: this is the queue order.
+      if [[ $id =~ $RE_ID ]] && [ "$listed" -lt "$MAX_PROBE_JOBS" ]; then
+        ep=$(jget "$JOBS/$id/meta.json" created_epoch)
+        [[ $ep =~ ^[0-9]+$ ]] || ep=$EPOCHSECONDS
+        age=$((EPOCHSECONDS - ep))
+        [ "$age" -ge 0 ] || age=0
+        queued+="$qsep$(probe_job "$id" queued "$depth" "$age")"
+        qsep=,
+        listed=$((listed + 1))
+      fi
     fi
   done
 
@@ -652,10 +687,15 @@ cmd_probe() {
       read -r ep _ <"$d/started" || ep=$EPOCHSECONDS
       [[ $ep =~ ^[0-9]+$ ]] || ep=$EPOCHSECONDS
       age=$((EPOCHSECONDS - ep))
+      [ "$age" -ge 0 ] || age=0
       running="{\"id\":\"$id\",\"age_s\":$age}"
+      jobs=$(probe_job "$id" running 0 "$age")
       break
     fi
   done
+  if [ -n "$queued" ]; then
+    jobs+="${jobs:+,}$queued"
+  fi
 
   if [ -d "$REPO" ]; then
     while read -r name sha; do
@@ -671,7 +711,7 @@ cmd_probe() {
     csep=,
   done
 
-  out="{\"schema\":$SCHEMA,\"runner\":\"$version\",\"host_id\":\"$HOST_ID\",\"boot_id\":\"$(boot_id)\",\"git\":$(js "$git_v"),\"tools\":{$tools},\"disk_free_kb\":$disk,\"github_token_env\":$tok,\"queue_depth\":$depth,\"running\":$running,\"refs\":{$refs},\"reconciled\":[$rec]}"
+  out="{\"schema\":$SCHEMA,\"runner\":\"$version\",\"host_id\":\"$HOST_ID\",\"boot_id\":\"$(boot_id)\",\"git\":$(js "$git_v"),\"tools\":{$tools},\"disk_free_kb\":$disk,\"github_token_env\":$tok,\"queue_depth\":$depth,\"running\":$running,\"jobs\":[$jobs],\"refs\":{$refs},\"reconciled\":[$rec]}"
   ok "$out"
 }
 
