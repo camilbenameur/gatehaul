@@ -58,7 +58,8 @@ const (
 // backend's transport). Entropy feeds job ids (default crypto/rand). Stdin
 // answers the y/N prompt of "up" when IsTerminal says a person is there
 // (default: nobody). Dir is a directory inside the repository (default ".")
-// and Repo is owner/repo.
+// and Repo is owner/repo. Self is how the commands gatehaul prints name it
+// (default "gatehaul"; see detect.DetectSelf).
 type Config struct {
 	Runner     ghx.Runner
 	Clock      clock.Clock
@@ -72,6 +73,7 @@ type Config struct {
 	IsTerminal func() bool
 	Dir        string
 	Repo       string
+	Self       string
 }
 
 // Controller runs the commands.
@@ -104,6 +106,9 @@ func New(cfg Config) *Controller {
 	}
 	if cfg.Dir == "" {
 		cfg.Dir = "."
+	}
+	if cfg.Self == "" {
+		cfg.Self = "gatehaul"
 	}
 	if cfg.API == nil {
 		backend, clk := cfg.Backend, cfg.Clock
@@ -144,6 +149,17 @@ func DetectRepo(ctx context.Context, r ghx.Runner, dir, flagValue, ghHost string
 }
 
 var repoRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+// commandLine is a gatehaul command as the user can run it: self (how
+// gatehaul names itself, Config.Self), then args.
+func commandLine(self string, args ...string) string {
+	return strings.Join(append([]string{self}, args...), " ")
+}
+
+// command is commandLine with the controller's own prefix.
+func (c *Controller) command(args ...string) string {
+	return commandLine(c.Self, args...)
+}
 
 // CommandString turns the arguments after "--" into the command the host runs:
 // one argument is a shell string, several are quoted and joined.

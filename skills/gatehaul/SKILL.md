@@ -11,7 +11,7 @@ gatehaul is a CLI on top of `gh`. It sends the **committed** state of a branch t
 ## 1. Make sure the CLI is there
 
 1. Run `gatehaul version`. If it prints a version, go to step 3.
-2. Otherwise install it: `bash ${CLAUDE_SKILL_DIR}/scripts/install.sh`. The script downloads the latest release for this OS and architecture with `gh`, verifies it against the release's `SHA256SUMS`, and installs it into `~/.local/bin` (or `$GATEHAUL_BIN_DIR`). Tell the user what you are installing before you run it. If `~/.local/bin` is not on `PATH`, call it by its full path.
+2. Otherwise install it: `bash ${CLAUDE_SKILL_DIR}/scripts/install.sh`. The script downloads the latest release for this OS and architecture with `gh`, verifies it against the release's `SHA256SUMS`, and installs it into `~/.local/bin` (or `$GATEHAUL_BIN_DIR`). Tell the user what you are installing before you run it. If `~/.local/bin` is not on `PATH`, call it by its full path: `next:` lines then name that full path, so they still run as written.
 3. In the repository, run `gatehaul doctor`. Every problem comes with a `Fix:` line: follow it, or show it to the user when it needs them (for example `gh auth refresh -h github.com -s codespace` opens a browser).
 
 ## 2. Hosts cost money: ask first
@@ -22,7 +22,7 @@ gatehaul only uses codespaces whose display name is `gatehaul-1`, `gatehaul-2`�
 
 1. **Commit first.** Only commits are sent. A *modified* tracked file (`dirty_tree` warning) is not tested until committed: commit it. An *untracked* file (`untracked_files` warning) is not in git, so not sent: `git add` it if the build needs it, otherwise ignore the warning (junk such as a crash dump).
 2. **Run:** `gatehaul run -- <command>` (for example `gatehaul run -- go test ./...`). One argument after `--` is a shell string; several are quoted and joined. Useful options, placed before `--`: `<ref>` to send another branch or commit, `--block 8m` to wait longer before returning, `--timeout 60m` for a long suite, `--json` for machine output, `--cd src/api` to run in a subdirectory of the repository (relative to its root; `-C` is your local directory, not this).
-3. **Read the first line:** `job=<id> state=<state> exit=<code>`, then the end of the log, then sometimes `next: <command>`. **Do exactly what `next:` says. No `next:` line means nothing is left to do.** A `# kind=… stage=…` line appears only for a job that did not succeed. `doctor` warning about a missing gate does not block `run`.
+3. **Read the first line:** `job=<id> state=<state> exit=<code>`, then the end of the log, then sometimes `next: <command>`. **Do exactly what `next:` says, as written. No `next:` line means nothing is left to do.** If the project calls gatehaul through a wrapper script, the wrapper can `export GATEHAUL_NEXT='bash path/to/wrapper.sh'` so that `next:` lines name it. A `# kind=… stage=…` line appears only for a job that did not succeed. `doctor` warning about a missing gate does not block `run`.
 4. **Still running (exit 3):** call `gatehaul wait <id>` (a unique prefix of the id is enough). `wait` never cancels anything; call it again as long as it returns 3.
 5. **Logs:** `gatehaul log <id> --tail 100`, `--grep <regex>`, or `--since <byte cursor>` to read the rest. Output is capped to protect your context.
 6. **Generators:** `gatehaul gen -- <command>` runs a command that changes files (`gofmt -w .`, `go mod tidy`, a code generator), then applies the resulting patch to the local working tree, uncommitted. Review the diff, commit, then `run` again to verify.

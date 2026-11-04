@@ -188,7 +188,7 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 	state, perr := job.Parse(sub.State)
 	if perr != nil {
 		return nil, c.fail(o.JSON, &out.Error{Code: out.CodeRunnerError, Message: fmt.Sprintf("%s answered %v for job %s", h.DisplayName, perr, id),
-			Fix: "update gatehaul, then run: gatehaul wait " + id, Exit: out.ExitInfra})
+			Fix: "update gatehaul, then run: " + c.command("wait", id), Exit: out.ExitInfra})
 	}
 	c.cacheWarn(c.Cache.SaveStatus(runner.JobStatus{Schema: runner.Schema, ID: id, State: string(state), SHA: sha, HostID: p.HostID}))
 
@@ -200,10 +200,10 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 	if e != nil {
 		// The job exists: whatever went wrong, it keeps running, and running
 		// the command again would make a second job. The only fix is to wait.
-		fmt.Fprintf(c.Stderr, "next: gatehaul wait %s\n", id)
+		fmt.Fprintf(c.Stderr, "next: %s\n", c.command("wait", id))
 		oe := *e
 		oe.Message += fmt.Sprintf(" (job %s was accepted and keeps running)", id)
-		oe.Fix = "gatehaul wait " + id
+		oe.Fix = c.command("wait", id)
 		oe.ID = id
 		return nil, c.fail(o.JSON, &oe)
 	}
@@ -214,10 +214,10 @@ func (c *Controller) dispatch(ctx context.Context, o RunOptions, kind string, al
 // every other failure means the host did not take the job, so its record goes.
 func (c *Controller) submitFailure(asJSON bool, err error, h host.Host, id string) int {
 	if isOutcomeUnknown(err) {
-		fmt.Fprintf(c.Stderr, "next: gatehaul wait %s\n", id)
+		fmt.Fprintf(c.Stderr, "next: %s\n", c.command("wait", id))
 		return c.fail(asJSON, &out.Error{Code: out.CodeOutcomeUnknown,
 			Message: fmt.Sprintf("the answer of %s was lost, so job %s may exist: %v", h.DisplayName, id, err),
-			Fix:     "gatehaul wait " + id, Exit: out.ExitInfra, ID: id})
+			Fix:     c.command("wait", id), Exit: out.ExitInfra, ID: id})
 	}
 	_ = c.Cache.Remove(id)
 	return c.fail(asJSON, runnerError(err, h))

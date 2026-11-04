@@ -91,7 +91,7 @@ func newController(ctx context.Context, c common, stdout, stderr io.Writer) (*ct
 	return ctl.New(ctl.Config{
 		Runner: r, Clock: clock.Real{}, Backend: b, Cache: job.NewCache(cacheDir),
 		Stdout: stdout, Stderr: stderr, Stdin: os.Stdin, IsTerminal: stdinIsTerminal,
-		Dir: *c.dir, Repo: repo,
+		Dir: *c.dir, Repo: repo, Self: detect.DetectSelf(detect.Invocation{}).Prefix,
 	}), 0
 }
 

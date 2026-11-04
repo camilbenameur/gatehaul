@@ -63,10 +63,10 @@ func (c *Controller) Log(ctx context.Context, o LogOptions) int {
 	switch found {
 	case hostGone:
 		return c.fail(o.JSON, &out.Error{Code: out.CodeHostGone, Message: d.Host + " no longer exists, so the log of " + d.ID + " is gone",
-			Fix: "gatehaul up, then run the command again: " + rerun(d), Exit: out.ExitInfra})
+			Fix: "gatehaul up, then run the command again: " + rerun(c.Self, d), Exit: out.ExitInfra})
 	case hostRecreated:
 		return c.fail(o.JSON, &out.Error{Code: out.CodeHostReplaced, Message: d.Host + " was recreated, so the log of " + d.ID + " is gone",
-			Fix: rerun(d), Exit: out.ExitInfra})
+			Fix: rerun(c.Self, d), Exit: out.ExitInfra})
 	}
 	if e := unusable(h); e != nil {
 		return c.fail(o.JSON, e)
@@ -81,11 +81,11 @@ func (c *Controller) Log(ctx context.Context, o LogOptions) int {
 	data, derr := base64.StdEncoding.DecodeString(chunk.DataB64)
 	if derr != nil {
 		return c.fail(o.JSON, &out.Error{Code: out.CodeRunnerError, Message: "the log of " + d.ID + " is not valid base64: " + derr.Error(),
-			Fix: "update gatehaul, then retry: gatehaul log " + d.ID, Exit: out.ExitInfra})
+			Fix: "update gatehaul, then retry: " + c.command("log", d.ID), Exit: out.ExitInfra})
 	}
 	next := ""
 	if chunk.Truncated {
-		next = fmt.Sprintf("gatehaul log %s --since %d", d.ID, chunk.Cursor)
+		next = c.command("log", d.ID, "--since", fmt.Sprint(chunk.Cursor))
 	}
 	if o.JSON {
 		if err := out.WriteJSON(c.Stdout, LogReport{ID: d.ID, State: chunk.State, Data: string(data), Cursor: chunk.Cursor, Size: chunk.Size, Truncated: chunk.Truncated, Next: next}); err != nil {
@@ -109,8 +109,8 @@ func (c *Controller) Log(ctx context.Context, o LogOptions) int {
 func (c *Controller) unknownLog(ctx context.Context, h host.Host, d job.Dispatch) *out.Error {
 	if p, e := c.probe(ctx, h); e == nil && p.HostID != "" && d.HostID != "" && p.HostID != d.HostID {
 		return &out.Error{Code: out.CodeHostReplaced, Message: d.Host + " was recreated, so the log of " + d.ID + " is gone",
-			Fix: rerun(d), Exit: out.ExitInfra}
+			Fix: rerun(c.Self, d), Exit: out.ExitInfra}
 	}
 	return &out.Error{Code: out.CodeNoSuchJob, Message: h.DisplayName + " does not know job " + d.ID,
-		Fix: "gatehaul doctor; if the host cleaned it up, run the command again: " + rerun(d), Exit: out.ExitInfra}
+		Fix: "gatehaul doctor; if the host cleaned it up, run the command again: " + rerun(c.Self, d), Exit: out.ExitInfra}
 }

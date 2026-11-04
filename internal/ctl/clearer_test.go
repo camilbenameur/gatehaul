@@ -134,7 +134,7 @@ func TestRerunIsTheTypedCommand(t *testing.T) {
 		{job.Dispatch{Kind: runner.KindGen, Cmd: "gofmt -w .", Dir: "src/back-end/src"}, "gatehaul gen --cd src/back-end/src -- 'gofmt -w .'"},
 	}
 	for _, c := range cases {
-		if got := rerun(c.d); got != c.want {
+		if got := rerun("gatehaul", c.d); got != c.want {
 			t.Errorf("rerun(%+v) = %q, want %q", c.d, got, c.want)
 		}
 	}
@@ -194,7 +194,7 @@ func TestRunCdRefusedBeforeAnythingIsSent(t *testing.T) {
 func TestWriteJobTextDiagnosticLine(t *testing.T) {
 	render := func(r *jobResult) string {
 		var b strings.Builder
-		writeJobText(&b, r)
+		writeJobText(&b, r, "gatehaul")
 		return b.String()
 	}
 	d := job.Dispatch{ID: "1-X", Kind: runner.KindRun}

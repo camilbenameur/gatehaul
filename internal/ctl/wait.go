@@ -282,7 +282,7 @@ func (c *Controller) waitGroup(ctx context.Context, h host.Host, rs []*jobResult
 		state, perr := job.Parse(st.State)
 		if perr != nil {
 			return &out.Error{Code: out.CodeRunnerError, Message: fmt.Sprintf("%s reported %v for job %s", h.DisplayName, perr, st.ID),
-				Fix: "update gatehaul, then run: gatehaul wait " + st.ID, Exit: out.ExitInfra}
+				Fix: "update gatehaul, then run: " + c.command("wait", st.ID), Exit: out.ExitInfra}
 		}
 		if st.HostID != "" && r.d.HostID != "" && st.HostID != r.d.HostID {
 			c.markReplaced(r, st.HostID)
@@ -394,14 +394,15 @@ func (r *jobResult) exit() int {
 	return r.state.ExitCode()
 }
 
-func (r *jobResult) next() string {
+// next is the command left to run for r, with self naming gatehaul, or "".
+func (r *jobResult) next(self string) string {
 	switch {
 	case !r.done:
-		return "gatehaul wait " + r.d.ID
+		return commandLine(self, "wait", r.d.ID)
 	case r.code == out.CodeHostReplaced, r.code == out.CodeHostGone:
-		return rerun(r.d)
+		return rerun(self, r.d)
 	case r.state != job.Succeeded:
-		return "gatehaul log " + r.d.ID
+		return commandLine(self, "log", r.d.ID)
 	case r.patch != nil:
 		return r.patch.next
 	}
@@ -416,12 +417,12 @@ func (r *jobResult) tail() string {
 	return string(b)
 }
 
-func (r *jobResult) jobReport() JobReport {
+func (r *jobResult) jobReport(self string) JobReport {
 	jr := JobReport{
 		ID: r.d.ID, State: string(r.state), Exit: r.exit(), Code: string(r.code),
 		FailureKind: r.status.FailureKind, Stage: r.status.Stage, Reason: r.status.Reason,
 		CommandExit: r.status.ExitCode, SHA: r.d.SHA, Host: r.d.Host, QueuePos: r.status.QueuePos,
-		LogTail: r.tail(), LogTruncated: r.status.Truncated, TreeDirty: r.status.TreeDirty, Next: r.next(),
+		LogTail: r.tail(), LogTruncated: r.status.Truncated, TreeDirty: r.status.TreeDirty, Next: r.next(self),
 		Ref: r.d.Ref, Dir: r.d.Dir,
 	}
 	if r.patch != nil {
@@ -444,7 +445,7 @@ func (c *Controller) report(rs []*jobResult, any, asJSON bool) int {
 			} else {
 				rep.PendingIDs = append(rep.PendingIDs, r.d.ID)
 			}
-			rep.Jobs = append(rep.Jobs, r.jobReport())
+			rep.Jobs = append(rep.Jobs, r.jobReport(c.Self))
 		}
 		if err := out.WriteJSON(c.Stdout, rep); err != nil {
 			return out.ExitInfra
@@ -456,13 +457,13 @@ func (c *Controller) report(rs []*jobResult, any, asJSON bool) int {
 		if i > 0 {
 			fmt.Fprintln(c.Stdout)
 		}
-		writeJobText(c.Stdout, r)
+		writeJobText(c.Stdout, r, c.Self)
 	}
 	c.writePatchErrors(rs, false)
 	return code
 }
 
-func writeJobText(w io.Writer, r *jobResult) {
+func writeJobText(w io.Writer, r *jobResult, self string) {
 	fmt.Fprintf(w, "job=%s state=%s exit=%d\n", r.d.ID, r.state, r.exit())
 	writePatchText(w, r)
 	if r.state != job.Succeeded || r.code != "" {
@@ -485,7 +486,7 @@ func writeJobText(w io.Writer, r *jobResult) {
 			fmt.Fprintln(w)
 		}
 	}
-	if n := r.next(); n != "" {
+	if n := r.next(self); n != "" {
 		fmt.Fprintf(w, "next: %s\n", n)
 	}
 }

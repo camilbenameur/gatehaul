@@ -50,9 +50,10 @@ func guardedCommand(dir, sha, cmd string) string {
 	return "cd -- " + shellQuote(dir) + " 2>/dev/null || { echo " + shellQuote(msg) + " >&2; exit 1; }\n" + cmd
 }
 
-// rerun is the command that runs job d again, as the user would type it.
-func rerun(d job.Dispatch) string {
-	s := "gatehaul " + d.Kind
+// rerun is the command that runs job d again, as the user would type it, with
+// self naming gatehaul (Config.Self).
+func rerun(self string, d job.Dispatch) string {
+	s := commandLine(self, d.Kind)
 	if d.Dir != "" {
 		s += " --cd " + shellQuote(d.Dir)
 	}

@@ -90,10 +90,10 @@ func (c *Controller) Apply(ctx context.Context, o ApplyOptions) int {
 	switch {
 	case !r.done:
 		return c.fail(o.JSON, &out.Error{Code: out.CodeJobNotDone, Message: fmt.Sprintf("job %s is still %s, so it has no patch yet", d.ID, r.state),
-			Fix: "gatehaul wait " + d.ID, Exit: out.ExitRunning, ID: d.ID})
+			Fix: c.command("wait", d.ID), Exit: out.ExitRunning, ID: d.ID})
 	case r.state != job.Succeeded:
 		return c.fail(o.JSON, &out.Error{Code: out.CodeNoPatch, Message: fmt.Sprintf("job %s ended %s, so it has no patch", d.ID, r.state),
-			Fix: "gatehaul log " + d.ID, Exit: r.state.ExitCode(), ID: d.ID})
+			Fix: c.command("log", d.ID), Exit: r.state.ExitCode(), ID: d.ID})
 	}
 	c.applyPatch(ctx, r, o.AllowSensitive)
 	return c.report(rs, false, o.JSON)
@@ -201,7 +201,7 @@ func (c *Controller) patchOf(ctx context.Context, r *jobResult, allowSensitive b
 	if !sha256RE.MatchString(expected) {
 		return &patchOutcome{err: &out.Error{Code: out.CodePatchMismatch,
 			Message: fmt.Sprintf("the host reported no valid sha256 for the patch of job %s (%q)", id, expected),
-			Fix:     "nothing was applied; update gatehaul, then run: " + rerun(r.d), Exit: out.ExitInfra, ID: id}}
+			Fix:     "nothing was applied; update gatehaul, then run: " + rerun(c.Self, r.d), Exit: out.ExitInfra, ID: id}}
 	}
 
 	lctx, cancel := context.WithTimeout(ctx, applyLockWait)
@@ -212,8 +212,8 @@ func (c *Controller) patchOf(ctx context.Context, r *jobResult, allowSensitive b
 			return &patchOutcome{sha: expected, err: interrupted()}
 		}
 		e := &out.Error{Code: out.CodeLockBusy, Message: "another gatehaul is applying the patch of job " + id + ": " + err.Error(),
-			Fix: "wait for it to finish, then run: gatehaul apply " + id, Exit: out.ExitInfra, ID: id}
-		return &patchOutcome{sha: expected, err: e, next: "gatehaul apply " + id}
+			Fix: "wait for it to finish, then run: " + c.command("apply", id), Exit: out.ExitInfra, ID: id}
+		return &patchOutcome{sha: expected, err: e, next: c.command("apply", id)}
 	}
 	defer func() { _ = release() }()
 	return c.patchLocked(ctx, r, expected, allowSensitive)
@@ -229,7 +229,7 @@ func (c *Controller) patchLocked(ctx context.Context, r *jobResult, expected str
 	if err != nil {
 		msg := "cannot restore the working tree after an apply of job " + id + " that did not end: " + oneLine(err.Error())
 		fix := "copy the files saved in " + filepath.Join(stateDir, "preimage", "files") + " back by hand (manifest.json beside them names each one), " +
-			"then delete " + filepath.Join(stateDir, "applying") + " and run: gatehaul apply " + id
+			"then delete " + filepath.Join(stateDir, "applying") + " and run: " + c.command("apply", id)
 		e := &out.Error{Code: out.CodePatchError, Message: msg, Fix: fix, Exit: out.ExitInfra, ID: id}
 		return &patchOutcome{sha: expected, err: e}
 	}
@@ -245,22 +245,22 @@ func (c *Controller) patchLocked(ctx context.Context, r *jobResult, expected str
 	data, e := c.patchBytes(ctx, r, expected)
 	if e != nil {
 		e.ID = id
-		return &patchOutcome{sha: expected, err: e, next: "gatehaul apply " + id}
+		return &patchOutcome{sha: expected, err: e, next: c.command("apply", id)}
 	}
 
 	top, err := (detect.Git{Runner: c.Runner, Dir: c.Dir}).TopLevel(ctx)
 	if err != nil {
-		e := asError(err, out.CodeNotGitRepo, "run gatehaul from inside the repository, then: gatehaul apply "+id)
+		e := asError(err, out.CodeNotGitRepo, "run gatehaul from inside the repository, then: "+c.command("apply", id))
 		e.ID = id
 		return &patchOutcome{sha: expected, err: e}
 	}
-	if e := checkTree(r.d, top); e != nil {
+	if e := checkTree(c.Self, r.d, top); e != nil {
 		return &patchOutcome{sha: expected, err: e}
 	}
 	// The sanitiser's own limits apply (files, bytes per file, bytes in all).
 	rep, err := patch.Check(ctx, c.Runner, top, r.d.SHA, data, expected, patch.Options{AllowSensitive: allowSensitive})
 	if err != nil {
-		e := asError(err, out.CodePatchError, "the base commit "+short(r.d.SHA)+" must exist locally; run git fsck, then: gatehaul apply "+id)
+		e := asError(err, out.CodePatchError, "the base commit "+short(r.d.SHA)+" must exist locally; run git fsck, then: "+c.command("apply", id))
 		if e.Code == out.CodePatchError {
 			e.Message = "cannot check the patch of job " + id + ": " + oneLine(err.Error())
 		}
@@ -273,7 +273,7 @@ func (c *Controller) patchLocked(ctx context.Context, r *jobResult, expected str
 	}
 	if !rep.OK() {
 		fix := "the patch was not applied; review the listed paths, change the command so it does not write them, " +
-			"or rerun with --allow-sensitive if a sensitive path is expected: gatehaul apply " + id + " --allow-sensitive"
+			"or rerun with --allow-sensitive if a sensitive path is expected: " + c.command("apply", id, "--allow-sensitive")
 		p.err = refusal(out.CodePatchRefused, id,
 			fmt.Sprintf("the patch of job %s was refused (%d problem(s)) and nothing was applied", id, len(rep.Problems)), fix)
 		return p
@@ -311,16 +311,16 @@ func (c *Controller) writePatch(ctx context.Context, r *jobResult, p *patchOutco
 		if d := oneLine(ae.Detail); d != "" {
 			msg += " (" + truncate(d, 200) + ")"
 		}
-		p.err = refusal(out.CodePatchConflict, id, msg, conflictFix(r.d, ae))
-		p.next = "gatehaul apply " + id
+		p.err = refusal(out.CodePatchConflict, id, msg, conflictFix(c.Self, r.d, ae))
+		p.next = c.command("apply", id)
 		return p
 	default:
-		e := asError(err, out.CodePatchError, "gatehaul apply "+id+" (if the message says the files could not be restored, the next run restores them first)")
+		e := asError(err, out.CodePatchError, c.command("apply", id)+" (if the message says the files could not be restored, the next run restores them first)")
 		if e.Code == out.CodePatchError {
 			e.Message = "cannot apply the patch of job " + id + ": " + oneLine(err.Error())
 		}
 		e.ID = id
-		p.err, p.next = e, "gatehaul apply "+id
+		p.err, p.next = e, c.command("apply", id)
 		return p
 	}
 	c.cacheWarn(c.Cache.SaveApplied(id, job.Applied{SHA256: p.sha, Files: paths, AppliedAt: c.Clock.Now().UTC().Format(time.RFC3339)}))
@@ -329,12 +329,12 @@ func (c *Controller) writePatch(ctx context.Context, r *jobResult, p *patchOutco
 
 // conflictFix says what to do about a patch that does not fit. It blames a file
 // in the way only when git says so.
-func conflictFix(d job.Dispatch, ae *patch.ApplyError) string {
+func conflictFix(self string, d job.Dispatch, ae *patch.ApplyError) string {
 	if strings.Contains(ae.Detail, "already exists in working directory") {
-		return "a file that the patch adds already exists: move or delete it, then gatehaul apply " + d.ID
+		return "a file that the patch adds already exists: move or delete it, then " + commandLine(self, "apply", d.ID)
 	}
 	return "the listed files differ from commit " + short(d.SHA) + " in your working tree (local changes, or another base): " +
-		"undo, commit or stash those changes, then gatehaul apply " + d.ID
+		"undo, commit or stash those changes, then " + commandLine(self, "apply", d.ID)
 }
 
 // sameDir reports whether a and b are the same directory.
@@ -355,13 +355,13 @@ func sameDir(a, b string) bool {
 
 // checkTree refuses a patch that would be written to another work tree than
 // the one the job was dispatched from.
-func checkTree(d job.Dispatch, top string) *out.Error {
+func checkTree(self string, d job.Dispatch, top string) *out.Error {
 	if d.Top == "" || sameDir(d.Top, top) {
 		return nil
 	}
 	return refusal(out.CodeWrongRepo, d.ID,
 		fmt.Sprintf("job %s was dispatched from the work tree %s, not from %s, so its patch was not applied", d.ID, d.Top, top),
-		"run the command from that work tree: gatehaul apply "+d.ID)
+		"run the command from that work tree: "+commandLine(self, "apply", d.ID))
 }
 
 // checkBase refuses a patch whose base is not the work tree's: HEAD must be the
@@ -369,7 +369,7 @@ func checkTree(d job.Dispatch, top string) *out.Error {
 // the patch changed.
 func (c *Controller) checkBase(ctx context.Context, d job.Dispatch, top string, files []patch.File) *out.Error {
 	failed := func(err error) *out.Error {
-		e := asError(err, out.CodePatchError, "run git status in "+top+" to see the error, then: gatehaul apply "+d.ID)
+		e := asError(err, out.CodePatchError, "run git status in "+top+" to see the error, then: "+c.command("apply", d.ID))
 		if e.Code == out.CodePatchError {
 			e.Message = "cannot compare HEAD with the commit job " + d.ID + " ran on: " + oneLine(err.Error())
 		}
@@ -379,7 +379,7 @@ func (c *Controller) checkBase(ctx context.Context, d job.Dispatch, top string, 
 	stale := func(head, why string) *out.Error {
 		return refusal(out.CodeStaleBase, d.ID,
 			fmt.Sprintf("job %s ran on commit %s, but the work tree %s is at %s (%s), so its patch was not applied", d.ID, short(d.SHA), top, head, why),
-			"check out the dispatched commit with git checkout "+d.SHA+" and run: gatehaul apply "+d.ID+"; or run again on this commit: "+rerun(d))
+			"check out the dispatched commit with git checkout "+d.SHA+" and run: "+c.command("apply", d.ID)+"; or run again on this commit: "+rerun(c.Self, d))
 	}
 	head, err := (detect.Git{Runner: c.Runner, Dir: top}).Head(ctx)
 	if errors.Is(err, detect.ErrNoCommit) {
@@ -442,7 +442,7 @@ func (c *Controller) patchBytes(ctx context.Context, r *jobResult, expected stri
 	data, err := base64.StdEncoding.DecodeString(pd.DataB64)
 	if err != nil {
 		return nil, &out.Error{Code: out.CodeRunnerError, Message: "the patch of " + id + " is not valid base64: " + err.Error(),
-			Fix: "update gatehaul, then retry: gatehaul apply " + id, Exit: out.ExitInfra}
+			Fix: "update gatehaul, then retry: " + c.command("apply", id), Exit: out.ExitInfra}
 	}
 	if int64(len(data)) > runner.MaxPatchBytes {
 		return nil, tooLarge(id)
@@ -450,7 +450,7 @@ func (c *Controller) patchBytes(ctx context.Context, r *jobResult, expected stri
 	if got := sumHex(data); got != expected || pd.SHA256 != expected || pd.Size != int64(len(data)) {
 		return nil, &out.Error{Code: out.CodePatchMismatch,
 			Message: fmt.Sprintf("the patch of job %s does not match its checksum: the host reported sha256 %s, the bytes received hash to %s", id, short(expected), short(got)),
-			Fix:     "nothing was applied; retry with: gatehaul apply " + id + "; if it happens again, run gatehaul doctor", Exit: out.ExitInfra}
+			Fix:     "nothing was applied; retry with: " + c.command("apply", id) + "; if it happens again, run gatehaul doctor", Exit: out.ExitInfra}
 	}
 	c.cacheWarn(c.Cache.SavePatch(id, data))
 	return data, nil
@@ -466,10 +466,10 @@ func (c *Controller) fetchPatch(ctx context.Context, d job.Dispatch) (runner.Pat
 	switch found {
 	case hostGone:
 		return runner.PatchData{}, &out.Error{Code: out.CodeHostGone, Message: d.Host + " no longer exists, so the patch of " + d.ID + " is gone",
-			Fix: "gatehaul up, then run the command again: " + rerun(d), Exit: out.ExitInfra}
+			Fix: "gatehaul up, then run the command again: " + rerun(c.Self, d), Exit: out.ExitInfra}
 	case hostRecreated:
 		return runner.PatchData{}, &out.Error{Code: out.CodeHostReplaced, Message: d.Host + " was recreated, so the patch of " + d.ID + " is gone",
-			Fix: rerun(d), Exit: out.ExitInfra}
+			Fix: rerun(c.Self, d), Exit: out.ExitInfra}
 	}
 	if e := unusable(h); e != nil {
 		return runner.PatchData{}, e
