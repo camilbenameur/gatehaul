@@ -127,12 +127,13 @@ func DetectRepo(ctx context.Context, r ghx.Runner, dir, flagValue, ghHost string
 	}
 	g := detect.Git{Runner: r, Dir: dir}
 	v, err := g.Repo(ctx, ghHost)
+	var nr *detect.NoGitHubRemoteError
 	switch {
 	case err == nil:
 		return v.Value, nil
-	case errors.Is(err, detect.ErrNoGitHubRemote):
-		return "", &out.Error{Code: out.CodeNoGitHubRemote, Message: "no git remote points to " + ghHost,
-			Fix: "git remote add origin https://" + ghHost + "/OWNER/REPO.git, or pass --repo owner/repo", Exit: out.ExitInfra}
+	case errors.As(err, &nr):
+		msg, fix := nr.Explain()
+		return "", &out.Error{Code: out.CodeNoGitHubRemote, Message: msg, Fix: fix, Exit: out.ExitInfra}
 	case ghx.IsNotFound(err):
 		return "", &out.Error{Code: out.CodeGitMissing, Message: "git is not installed", Fix: "install git " + detect.MinGitVersion.String() + " or later: https://git-scm.com", Exit: out.ExitInfra}
 	case errors.Is(err, context.Canceled):

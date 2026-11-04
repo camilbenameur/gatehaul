@@ -196,6 +196,27 @@ func TestBadRepoFlag(t *testing.T) {
 	expect(t, r, "repo", out.LevelError, out.CodeUsage)
 }
 
+// Run from a checkout of another forge's repository, doctor says what it found
+// and leads with read-only fixes, never with adding a remote.
+func TestNonGitHubOriginLeadsWithReadOnlyFixes(t *testing.T) {
+	r := run(t, scenario(response{prefix: git("remote", "get-url", "origin"), res: ghx.Stdout("git@git.example.com:team/widget.git\n")}), "")
+	c := expect(t, r, "repo", out.LevelError, out.CodeNoGitHubRemote)
+	if c.Message != "no git remote points to github.com (origin is git.example.com)" {
+		t.Errorf("message = %q", c.Message)
+	}
+	if strings.Contains(c.Fix, "git remote add") || !strings.HasPrefix(c.Fix, "run gatehaul from the checkout of the GitHub repository") {
+		t.Errorf("fix = %q", c.Fix)
+	}
+}
+
+func TestNoRemoteAtAll(t *testing.T) {
+	r := run(t, scenario(response{prefix: git("remote"), res: ghx.Stdout("")}), "")
+	c := expect(t, r, "repo", out.LevelError, out.CodeNoGitHubRemote)
+	if !strings.HasPrefix(c.Fix, "run gatehaul from the checkout") || !strings.Contains(c.Fix, "for the user to do (git remote add") {
+		t.Errorf("fix = %q", c.Fix)
+	}
+}
+
 func TestDirtyTreeWarns(t *testing.T) {
 	r := run(t, scenario(response{prefix: git("status"), res: ghx.Stdout(" M main.go\n?? scratch.txt\n")}), "")
 	if !r.OK {
